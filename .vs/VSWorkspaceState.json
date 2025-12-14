@@ -1,0 +1,11 @@
+{
+  "ExpandedNodes": [
+    "",
+    "\\os",
+    "\\os\\src",
+    "\\os\\src\\syscall",
+    "\\os\\src\\task"
+  ],
+  "SelectedNode": "\\os\\src\\task\\manager.rs",
+  "PreviewInSolutionExplorer": false
+}
