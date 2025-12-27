@@ -16,8 +16,8 @@ pub mod rv_board;
 
 pub fn machine_init() {
     trap::init();
-    trap::enable_timer_interrupt();
-    set_next_trigger();
+    // trap::enable_timer_interrupt();
+    // set_next_trigger();
 }
 
 use time::set_next_trigger;

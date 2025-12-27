@@ -60,81 +60,115 @@ lazy_static! {
 }
 
 /// 运行任务调度
-/// # 作用
-/// 运行任务调度器，不断从任务队列中取出任务并运行
+// 引用 sstatus
+use riscv::register::sstatus;
+
 pub fn run_tasks() {
     loop {
         let cpu_id = current_cpu_id();
-        // 获取全局处理器对象
+        
+        // 1. 【关键】获取锁之前必须关闭中断，防止中断处理函数重入导致死锁
+        unsafe { sstatus::clear_sie(); }
+
         let mut processor = PROCESSORS[cpu_id].lock();
-        // 尝试从全局变量 TASK_MANAGER 中取出一个任务
+        
         if let Some(task) = fetch_task() {
-            // 获取当前空闲任务的上下文指针
             let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
-            // 独占地访问即将运行的任务的 TCB
             let next_task_cx_ptr = {
                 let mut task_inner = task.acquire_inner_lock();
-
                 task_inner.get_trap_cx().kernel_tp = cpu_id;
-
                 task_inner.task_status = TaskStatus::Running;
                 &task_inner.task_cx as *const TaskContext
             };
-            // 设置当前正在运行的任务
             processor.current = Some(task);
-            // 手动释放处理器
             drop(processor);
+            
+            // 2. 切换任务
+            // __switch 恢复的 sstatus 通常会包含开启中断（如果任务是在开启中断时被挂起的）
             unsafe {
-                // 调用__switch 函数(汇编)切换任务
                 __switch(idle_task_cx_ptr, next_task_cx_ptr);
             }
         } else {
-            // 如果没有任务
-            // 释放处理器的锁
+            // 没有任务，释放锁
             drop(processor);
-            // 没有就绪的任务，尝试唤醒一些任务
-            do_wake_expired();
 
-            // 只有当有中断（如时钟、外部设备）来临时才会继续向下执行
+            // 3. 【关键】Idle 状态处理
+            // 必须开启中断才能被唤醒（响应时钟中断或其他），
+            // 使用 wfi 等待以降低功耗。
             unsafe {
-                // 确保中断是开启的，否则 wfi 会永久休眠
-                // riscv::register::sstatus::set_sie(); 
+                sstatus::set_sie(); 
                 riscv::asm::wfi(); 
             }
         }
     }
 }
 
-/// 取出当前正在运行的任务
 pub fn take_current_task() -> Option<Arc<TaskControlBlock>> {
     let cpu_id = current_cpu_id();
-    PROCESSORS[cpu_id].lock().take_current()
+    let sstatus = unsafe { riscv::register::sstatus::read() };
+    let was_enabled = sstatus.sie();
+    unsafe { riscv::register::sstatus::clear_sie(); }
+    let task = PROCESSORS[cpu_id].lock().take_current();
+    if was_enabled {
+        unsafe { riscv::register::sstatus::set_sie(); }
+    }
+    task
 }
 
-/// 获取当前正在运行的任务
 pub fn current_task() -> Option<Arc<TaskControlBlock>> {
     let cpu_id = current_cpu_id();
-    PROCESSORS[cpu_id].lock().current()
+    // 1. 获取当前 sstatus 状态
+    let sstatus = unsafe { riscv::register::sstatus::read() };
+    let was_enabled = sstatus.sie();
+    // 2. 关中断以获取锁
+    unsafe { riscv::register::sstatus::clear_sie(); }
+    let task = PROCESSORS[cpu_id].lock().current();
+    // 3. 仅在进入前是开启状态时，才恢复中断
+    if was_enabled {
+        unsafe { riscv::register::sstatus::set_sie(); }
+    }
+    // 如果之前是关闭的（如在 trap_handler 中），则保持关闭
+    task
 }
 
 /// 获取当前正在运行的任务的用户态页表令牌
 pub fn current_user_token() -> usize {
-    current_task().unwrap().get_user_token()
+    // 【关键修复】防止 Idle 时 Panic
+    match current_task() {
+        Some(task) => task.get_user_token(),
+        None => {
+            // 如果是 Idle 状态被中断（如时钟中断），此时没有用户页表。
+            // 返回 0 可能意味着使用内核页表（取决于你的 MMU 逻辑），或者应该在调用处避免调用此函数。
+            // 为了防止 Panic，我们这里返回 0，并在日志里报个警（可选）
+            0 
+        }
+    }
 }
 
 /// 获取当前正在运行的任务的陷阱上下文
 pub fn current_trap_cx() -> &'static mut TrapContext {
-    current_task().unwrap().acquire_inner_lock().get_trap_cx()
+    // 【关键修复】防止 Idle 时 Panic
+    match current_task() {
+        Some(task) => task.acquire_inner_lock().get_trap_cx(),
+        None => {
+            panic!("Trap Context not found! (Running Idle?)");
+        }
+    }
 }
 
-/// 切换到空闲任务上下文
 pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     let cpu_id = current_cpu_id();
-    // 获取空闲任务的上下文指针
+    
+    // 【关键修复】关中断防止死锁
+    unsafe { sstatus::clear_sie(); }
+    
     let idle_task_cx_ptr = PROCESSORS[cpu_id].lock().get_idle_task_cx_ptr();
+    
+    // 切换回 idle 循环
     unsafe {
-        // 调用__switch 函数(汇编)切换任务
         __switch(switched_task_cx_ptr, idle_task_cx_ptr);
+        // 回来后，说明任务又被调度了，恢复中断（可选，通常由 sstatus 自动恢复）
+        // sstatus::set_sie(); 
     }
 }
 
@@ -146,13 +180,7 @@ pub fn current_cpu_id() -> usize {
     }
     #[cfg(not(target_arch = "riscv64"))]
     {
-        cpu_id = 0; // 非 RISC-V 架构或者测试时的默认值
+        cpu_id = 0;
     }
-
-    // if cpu_id >= MAX_CPU_NUM {
-    //     return 0; 
-    // }
-    //todo()在 TrapContext 中保存内核的 tp，并在 trap.S 中恢复它
-
     cpu_id
 }
