@@ -24,6 +24,7 @@ use alloc::vec::Vec;
 use core::fmt::{self, Debug, Formatter};
 use log::trace;
 use spin::{Mutex, MutexGuard};
+use crate::task::processor::current_cpu_id;
 
 #[derive(Clone)]
 /// 任务的文件系统状态
@@ -461,7 +462,7 @@ impl TaskControlBlock {
             memory_set.create_elf_tables(self.ustack_bottom_va(), argv_vec, envp_vec, &elf_info);
         log::trace!("[load_elf] user sp after pushing parameters: {:X}", user_sp);
         // 初始化陷阱上下文
-        let trap_cx = TrapContext::app_init_context(
+        let mut trap_cx = TrapContext::app_init_context(
             if let Some(interp_entry) = elf_info.interp_entry {
                 interp_entry
             } else {
@@ -476,6 +477,10 @@ impl TaskControlBlock {
             // 陷阱处理函数地址
             trap_handler as usize,
         );
+
+        // 【关键修复】exec 不会经过调度器，必须手动将 kernel_tp 设置为当前 CPU ID
+        trap_cx.kernel_tp = current_cpu_id();
+
         // **** 保持当前PCB锁
         let mut inner = self.acquire_inner_lock();
         // 更新陷阱上下文的物理页号
