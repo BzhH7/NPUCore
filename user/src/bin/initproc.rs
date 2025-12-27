@@ -404,7 +404,7 @@ fn main() -> i32 {
     ];
 
     let mut exit_code: i32 = 0;
-    /*
+    
     for argv in schedule_musl {
         let pid = fork();
         if pid == 0 {
@@ -424,22 +424,22 @@ fn main() -> i32 {
             waitpid(pid as usize, &mut exit_code);
         }
     }
-    */
+    
      //能进入bash，方便调试
-    if fork() == 0 {
-        exec(path, &[path.as_ptr() as *const u8, core::ptr::null()], &environ);
-    } else {
-        loop {
-            let mut exit_code: i32 = 0;
-            let pid = wait(&mut exit_code);
-            // ECHLD is -10
-            // user_lib::println!(
-            //     "[initproc] Released a zombie process, pid={}, exit_code={}",
-            //     pid,
-            //     exit_code,
-            // );
-        }
-    }
+    // if fork() == 0 {
+    //     exec(path, &[path.as_ptr() as *const u8, core::ptr::null()], &environ);
+    // } else {
+    //     loop {
+    //         let mut exit_code: i32 = 0;
+    //         let pid = wait(&mut exit_code);
+    //         // ECHLD is -10
+    //         // user_lib::println!(
+    //         //     "[initproc] Released a zombie process, pid={}, exit_code={}",
+    //         //     pid,
+    //         //     exit_code,
+    //         // );
+    //     }
+    // }
 
     shutdown();
     0
