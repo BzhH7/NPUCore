@@ -650,8 +650,6 @@ impl PartialEq for TimeoutWaiter {
 pub struct TimeoutWaitQueue {
     /// 使用二叉堆存储任务（最大堆），按超时时间排序
     inner: BinaryHeap<TimeoutWaiter>,
-    /// 预分配的缓冲区，避免在中断处理中进行内存分配
-    temp_buffer: Vec<TimeoutWaiter>,
 }
 
 impl TimeoutWaitQueue {
@@ -659,7 +657,6 @@ impl TimeoutWaitQueue {
     pub fn new() -> Self {
         Self {
             inner: BinaryHeap::new(),
-            temp_buffer: Vec::with_capacity(128),
         }
     }
     /// 这个函数会将一个`task`添加到`WaitQueue`但是**不会**阻塞这个任务，
@@ -673,9 +670,6 @@ impl TimeoutWaitQueue {
         let cpu_id = current_cpu_id();
 
         let mut manager = TASK_MANAGERS[cpu_id].lock();
-        // 临时向量，用于存储因竞争条件还未进入睡眠状态的任务
-        let mut temp_waiters = Vec::new();
-        
         // 循环处理超时任务
         while let Some(waiter) = self.inner.pop() {
             // 堆中剩下的任务还没有超时
@@ -698,38 +692,25 @@ impl TimeoutWaitQueue {
                         match inner.task_status {
                             // 若状态为可中断状态，改为就绪态
                             super::TaskStatus::Interruptible => {
-                                inner.task_status = super::task::TaskStatus::Ready;
-                                drop(inner);
-                                log::trace!(
-                                    "[wake_expired] pid: {}, timeout: {:?}",
-                                    task.pid.0,
-                                    waiter.timeout
-                                );
-                                manager.wake_interruptible(task);
+                                inner.task_status = super::task::TaskStatus::Ready
                             }
-                            // 【关键修复】
-                            // 若状态为 Running 或 Ready，说明任务还未完成睡眠流程（sys_nanosleep Race Condition）
-                            // 或者是由于抢占、信号导致的暂时状态。
-                            // 我们必须保留这个 waiter，稍后重试，否则任务一旦进入 Interruptible 将永远无法唤醒。
-                            super::TaskStatus::Running | super::TaskStatus::Ready => {
-                                drop(inner);
-                                temp_waiters.push(waiter);
-                            }
-                            // 对于处于僵尸态的任务，忽略
-                            _ => {
-                                drop(inner);
-                            }
+                            // 对于处于 就绪态或运行态的任务，不需要做唤醒操作
+                            // 对于处于僵尸态的任务，做唤醒操作会搞砸进程管理
+                            _ => continue,
                         }
+                        // 释放锁
+                        drop(inner);
+                        log::trace!(
+                            "[wake_expired] pid: {}, timeout: {:?}",
+                            task.pid.0,
+                            waiter.timeout
+                        );
+                        manager.wake_interruptible(task);
                     }
                     // task is dead, just ignore
                     None => continue,
                 }
             }
-        }
-        
-        // 将未处理的 Running/Ready 任务放回队列，等待下一次 tick 处理
-        for waiter in temp_waiters {
-            self.inner.push(waiter);
         }
     }
     #[allow(unused)]
