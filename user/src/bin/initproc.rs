@@ -404,28 +404,28 @@ fn main() -> i32 {
     ];
 
     let mut exit_code: i32 = 0;
-    /*
-    for argv in schedule_musl {
-        let pid = fork();
-        if pid == 0 {
-            chdir("/musl\0");
-            exec(path, &argv, &environ);
-        } else {
-            waitpid(pid as usize, &mut exit_code);
-        }
-    }
+    
+    // for argv in schedule_musl {
+    //     let pid = fork();
+    //     if pid == 0 {
+    //         chdir("/musl\0");
+    //         exec(path, &argv, &environ);
+    //     } else {
+    //         waitpid(pid as usize, &mut exit_code);
+    //     }
+    // }
 
-    for argv in schedule_glibc {
-        let pid = fork();
-        if pid == 0 {
-            chdir("/glibc\0");
-            exec(path, &argv, &environ);
-        } else {
-            waitpid(pid as usize, &mut exit_code);
-        }
-    }
-    */
-     //能进入bash，方便调试
+    // for argv in schedule_glibc {
+    //     let pid = fork();
+    //     if pid == 0 {
+    //         chdir("/glibc\0");
+    //         exec(path, &argv, &environ);
+    //     } else {
+    //         waitpid(pid as usize, &mut exit_code);
+    //     }
+    // }
+    
+    //  能进入bash，方便调试
     if fork() == 0 {
         exec(path, &[path.as_ptr() as *const u8, core::ptr::null()], &environ);
     } else {

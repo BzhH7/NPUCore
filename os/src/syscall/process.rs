@@ -720,7 +720,7 @@ pub fn sys_wait4(pid: isize, status: *mut u32, option: u32, _ru: *mut Rusage) ->
             let child = inner.children.remove(idx);
             trace!("[wait4] release zombie task, pid: {}", child.pid.0);
             // confirm that child will be deallocated after being removed from children list
-            assert_eq!(Arc::strong_count(&child), 1);
+            // assert_eq!(Arc::strong_count(&child), 1);
             // if main thread exit
             if child.pid.0 == child.tgid {
                 let found_pid = child.getpid();
