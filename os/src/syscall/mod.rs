@@ -131,13 +131,7 @@ use crate::{
     timer::{ITimerVal, TimeSpec, Times},
 };
 
-pub fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
-
-    let cpu_id = crate::task::processor::current_cpu_id();
-    if syscall_id == 124 { // 124 是 sys_yield 的调用号
-        println!("[CPU {}] handling sys_yield", cpu_id);
-    }
-    
+pub fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {    
     let mut show_info = false;
     if option_env!("LOG").is_some()
         && ![
