@@ -23,6 +23,6 @@ _start:
     .section .bss.stack
     .globl boot_stack
 boot_stack:
-    .space 4096 * 16
+    .space 4096 * 16 * 4
     .globl boot_stack_top
 boot_stack_top:

@@ -9,7 +9,7 @@ use crate::hal::arch::riscv::time::set_next_trigger;
 use crate::mm::{frame_reserve, MemoryError, VirtAddr};
 use crate::syscall::syscall;
 use crate::task::{
-    current_task, current_trap_cx, do_signal, do_wake_expired, suspend_current_and_run_next,
+    current_task, current_trap_cx, do_signal, do_wake_expired, run_tasks, suspend_current_and_run_next,
     Signals,
 };
 use alloc::format;
@@ -67,25 +67,54 @@ pub fn enable_timer_interrupt() {
 #[no_mangle]
 pub fn trap_handler() -> ! {
     set_kernel_trap_entry();
+    
+    // === 添加调试打印 ===
+    let raw_tp: usize;
+    unsafe { core::arch::asm!("mv {}, tp", out(reg) raw_tp); }
+    let scause = scause::read();
+
+    // 安全地记录时间，仅当有任务时
     if let Some(task) = current_task() {
         let mut inner = task.acquire_inner_lock();
         inner.update_process_times_enter_trap();
     }
+
     let scause = scause::read();
     let stval = stval::read();
+    
     match scause.cause() {
         Trap::Exception(Exception::UserEnvCall) => {
-            // jump to next instruction anyway
-            let mut cx = current_trap_cx();
-            cx.gp.pc += 4;
-            // get system call return value
-            let result = syscall(
-                cx.gp.a7,
-                [cx.gp.a0, cx.gp.a1, cx.gp.a2, cx.gp.a3, cx.gp.a4, cx.gp.a5],
-            );
-            // cx is changed during sys_exec, so we have to call it again
-            cx = current_trap_cx();
-            cx.gp.a0 = result as usize;
+            // 1. 获取系统调用 ID 和参数
+            // 使用单独的块 {} 限制作用域，确保 task 在 syscall 之前被 Drop
+            let (syscall_id, args) = if let Some(task) = current_task() {
+                let mut inner = task.acquire_inner_lock();
+                let cx = inner.get_trap_cx();
+                cx.gp.pc += 4; // pc + 4 跳过 ecall 指令
+                (
+                    cx.gp.a7,
+                    [cx.gp.a0, cx.gp.a1, cx.gp.a2, cx.gp.a3, cx.gp.a4, cx.gp.a5],
+                )
+            } else {
+                 // 之前添加的 Panic 逻辑
+                 let raw_tp: usize;
+                 unsafe { core::arch::asm!("mv {}, tp", out(reg) raw_tp); }
+                 panic!("Syscall from Idle is impossible! tp={}, cpu_id={}", raw_tp, crate::task::processor::current_cpu_id());
+            }; 
+            // ^^^ 关键点：在这里，'task' 变量离开作用域被 Drop，引用计数恢复正常
+
+            // 2. 执行系统调用
+            // 此时栈上不再持有当前任务的强引用
+            // 如果是 sys_exit，它将不会返回，但因为 task 已被释放，不会导致引用计数泄漏
+            let result = syscall(syscall_id, args);
+
+            // 3. 处理返回值
+            // 只有当 syscall 返回时（即不是 exit），才会执行到这里
+            // 重新获取任务上下文写入返回值
+            if let Some(task) = current_task() {
+                let mut inner = task.acquire_inner_lock();
+                let cx = inner.get_trap_cx();
+                cx.gp.a0 = result as usize;
+            }
         }
         Trap::Exception(Exception::StoreFault)
         | Trap::Exception(Exception::StorePageFault)
@@ -93,45 +122,62 @@ pub fn trap_handler() -> ! {
         | Trap::Exception(Exception::InstructionPageFault)
         | Trap::Exception(Exception::LoadFault)
         | Trap::Exception(Exception::LoadPageFault) => {
-            let task = current_task().unwrap();
-            let mut inner = task.acquire_inner_lock();
-            let addr = VirtAddr::from(stval);
-            log::debug!(
-                "[page_fault] pid: {}, type: {:?}",
-                task.pid.0,
-                scause.cause()
-            );
-            // This is where we handle the page fault.
-            frame_reserve(3);
-            if let Err(error) = task.vm.lock().do_page_fault(addr) {
-                match error {
-                    MemoryError::BeyondEOF => {
-                        inner.add_signal(Signals::SIGBUS);
+            if let Some(task) = current_task() {
+                let mut inner = task.acquire_inner_lock();
+                let addr = VirtAddr::from(stval);
+                log::debug!(
+                    "[page_fault] pid: {}, type: {:?}",
+                    task.pid.0,
+                    scause.cause()
+                );
+                frame_reserve(3);
+                if let Err(error) = task.vm.lock().do_page_fault(addr) {
+                    match error {
+                        MemoryError::BeyondEOF => {
+                            inner.add_signal(Signals::SIGBUS);
+                        }
+                        MemoryError::NoPermission | MemoryError::BadAddress => {
+                            inner.add_signal(Signals::SIGSEGV);
+                        }
+                        _ => unreachable!(),
                     }
-                    MemoryError::NoPermission | MemoryError::BadAddress => {
-                        inner.add_signal(Signals::SIGSEGV);
-                    }
-                    _ => unreachable!(),
-                }
-            };
+                };
+            }
+            else {
+                panic!("Kernel PageFault in Idle/Init! scause: {:?}, stval: {:#x}", scause.cause(), stval);
+            }
         }
         Trap::Exception(Exception::IllegalInstruction) => {
-            let task = current_task().unwrap();
-            let mut inner = task.acquire_inner_lock();
-            inner.add_signal(Signals::SIGILL);
+            if let Some(task) = current_task() {
+                let mut inner = task.acquire_inner_lock();
+                inner.add_signal(Signals::SIGILL);
+            } else {
+                 panic!("IllegalInstruction in Idle!");
+            }
         }
         Trap::Interrupt(Interrupt::SupervisorTimer) => {
             do_wake_expired();
-            // 记录时钟中断次数（中断号5）
             crate::fs::dev::interrupts::Interrupts::increment_interrupt_count(5);
             set_next_trigger();
-            suspend_current_and_run_next();
+            
+            // 【关键修复】区分有任务和无任务(Idle)的情况
+            if current_task().is_some() {
+                suspend_current_and_run_next();
+            } else {
+                // 如果是 Idle 状态，不要走 trap_return (那会尝试切回用户态并 panic)
+                // 直接回到调度循环找新任务
+                run_tasks();
+            }
         }
         Trap::Interrupt(Interrupt::SupervisorExternal) => {
-            // 记录外部中断次数（中断号9）
             crate::fs::dev::interrupts::Interrupts::increment_interrupt_count(9);
-            // 这里可以添加具体的外部中断处理逻辑
-            suspend_current_and_run_next();
+            
+            // 【关键修复】同上
+            if current_task().is_some() {
+                suspend_current_and_run_next();
+            } else {
+                run_tasks();
+            }
         }
         _ => {
             panic!(
@@ -141,18 +187,27 @@ pub fn trap_handler() -> ! {
             );
         }
     }
-    {
-        let task = current_task().unwrap();
+
+    // 只有当有任务时，才执行从 Trap 返回到用户态的逻辑
+    if let Some(task) = current_task() {
         let mut inner = task.acquire_inner_lock();
         inner.update_process_times_leave_trap(scause.cause());
+        drop(inner); // 记得释放锁
+        drop(task);  // 释放 task 引用
+        trap_return();
+    } else {
+        // 如果代码走到这里且没有任务 (Idle)，说明上面没有处理好分支
+        // 重新进入调度循环
+        run_tasks();
+        panic!("Unreachable in trap_handler: run_tasks returned!");
     }
-    trap_return();
 }
 
 #[no_mangle]
 pub fn trap_return() -> ! {
     do_signal();
     set_user_trap_entry();
+    // 这里的 unwrap 现在是安全的，因为我们在 trap_handler 里拦截了 None 的情况
     let task = current_task().unwrap();
     let trap_cx_ptr = task.trap_cx_user_va();
     let user_satp = task.get_user_token();
@@ -172,33 +227,24 @@ pub fn trap_return() -> ! {
 
 #[no_mangle]
 pub fn trap_from_kernel() -> ! {
-    use riscv::register::{sstatus, sepc}; // 确保引入
+    use riscv::register::{sstatus, sepc};
 
     let scause = scause::read();
     let stval = stval::read();
     
     match scause.cause() {
         Trap::Interrupt(Interrupt::SupervisorTimer) => {
-            // 1. 设置下一次时钟
             set_next_trigger();
-            
-           // 只有当有任务运行时 (current_task != None)，才执行调度切换
             if current_task().is_some() {
-                // 保存上下文
                 let saved_sepc = sepc::read();
                 let saved_sstatus = sstatus::read();
-                
                 suspend_current_and_run_next();
-                
-                // 恢复上下文
                 unsafe {
                     sepc::write(saved_sepc);
                     core::arch::asm!("csrw sstatus, {}", in(reg) saved_sstatus.bits());
                     core::arch::asm!("sret", options(noreturn));
                 }
             } else {
-                // 如果当前没有任务 (Idle 状态)，什么都不用做
-                // 直接返回，让 CPU 继续在 run_tasks 循环里找任务
                 unsafe {
                     core::arch::asm!("sret", options(noreturn));
                 }

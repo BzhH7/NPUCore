@@ -126,8 +126,18 @@ extern "C" {
     fn _start();
 }
 
+use crate::hal::TrapContext;
+
 #[no_mangle]
 pub fn rust_main(hart_id: usize) -> ! {
+    
+    unsafe {
+        riscv::register::sstatus::clear_sie();
+    }
+
+    // 中断向量表设置 (stvec) 必须每个核都做
+    machine_init(); 
+
     // 1. 判断是否为 BSP (原子操作 CAS)
     // 只有第一个执行这行代码的核心会得到 is_bsp = true
     let is_bsp = !BOOT_FLAG.swap(true, Ordering::SeqCst);
@@ -234,10 +244,7 @@ pub fn rust_main(hart_id: usize) -> ! {
     //     所有核心通用逻辑
     // ==========================
     
-    // 中断向量表设置 (stvec) 必须每个核都做
-    machine_init(); 
-    
-    unsafe { riscv::register::sstatus::set_sie(); }
+    // unsafe { riscv::register::sstatus::set_sie(); }
 
     // 进入调度循环
     println!("[kernel] Hart {} entering task loop...", hart_id);
