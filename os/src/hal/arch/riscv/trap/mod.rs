@@ -85,17 +85,18 @@ pub fn trap_handler() -> ! {
     match scause.cause() {
         Trap::Exception(Exception::UserEnvCall) => {
             // 1. 获取系统调用 ID 和参数
-            // 使用单独的块 {} 限制作用域，确保 task 在 syscall 之前被 Drop
+            // 使用单独的块 {} 限制作用域，确保 task 变量在 syscall 之前被 Drop
+            // 否则 sys_exit 挂起时，栈上会残留 task 的引用，导致引用计数无法清零
             let (syscall_id, args) = if let Some(task) = current_task() {
                 let mut inner = task.acquire_inner_lock();
                 let cx = inner.get_trap_cx();
-                cx.gp.pc += 4; // pc + 4 跳过 ecall 指令
+                cx.gp.pc += 4; // 跳过 ecall 指令
                 (
                     cx.gp.a7,
                     [cx.gp.a0, cx.gp.a1, cx.gp.a2, cx.gp.a3, cx.gp.a4, cx.gp.a5],
                 )
             } else {
-                 // 之前添加的 Panic 逻辑
+                 // 之前添加的 Panic 调试信息
                  let raw_tp: usize;
                  unsafe { core::arch::asm!("mv {}, tp", out(reg) raw_tp); }
                  panic!("Syscall from Idle is impossible! tp={}, cpu_id={}", raw_tp, crate::task::processor::current_cpu_id());
@@ -104,7 +105,7 @@ pub fn trap_handler() -> ! {
 
             // 2. 执行系统调用
             // 此时栈上不再持有当前任务的强引用
-            // 如果是 sys_exit，它将不会返回，但因为 task 已被释放，不会导致引用计数泄漏
+            // 如果是 sys_exit，它将不会返回，但因为 task 已被释放，wait4 可以正常回收资源
             let result = syscall(syscall_id, args);
 
             // 3. 处理返回值
