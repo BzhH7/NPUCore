@@ -687,6 +687,9 @@ impl TimeoutWaitQueue {
                 // 将弱引用升级为强引用
                 match waiter.task.upgrade() {
                     Some(task) => {
+
+                        log::info!("[Wake] Waking up task {}", task.pid.0);
+
                         // 获取内部锁
                         let mut inner = task.acquire_inner_lock();
                         match inner.task_status {
@@ -708,7 +711,10 @@ impl TimeoutWaitQueue {
                         manager.wake_interruptible(task);
                     }
                     // task is dead, just ignore
-                    None => continue,
+                    None => {
+                        log::error!("[Wake] Failed to wake task: Task dropped/deallocated!");
+                        continue;
+                    }
                 }
             }
         }
