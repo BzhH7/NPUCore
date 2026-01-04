@@ -196,6 +196,8 @@ pub fn sys_nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> isize {
     };
 
     let end = TimeSpec::now() + req;
+    log::info!("[Sleep] Task {} sleeping until sec:{} nsec:{}", 
+        task.pid.0, end.tv_sec, end.tv_nsec);
     wait_with_timeout(Arc::downgrade(&task), end);
     drop(task);
 

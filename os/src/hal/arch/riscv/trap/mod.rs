@@ -157,6 +157,11 @@ pub fn trap_handler() -> ! {
             }
         }
         Trap::Interrupt(Interrupt::SupervisorTimer) => {
+
+            if unsafe { TIMER_INTERRUPT } % 100 == 0 {
+                log::trace!("[Trap] Timer interrupt triggered");
+            }
+
             do_wake_expired();
             crate::fs::dev::interrupts::Interrupts::increment_interrupt_count(5);
             set_next_trigger();
