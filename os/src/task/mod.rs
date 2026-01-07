@@ -30,6 +30,7 @@ pub use processor::{
 pub use signal::*;
 pub use task::{RobustList, Rusage, TaskControlBlock, TaskStatus};
 use self::processor::{PROCESSORS, current_cpu_id};
+use riscv::register::sstatus;
 
 #[allow(unused)]
 pub fn try_yield() {
@@ -44,25 +45,11 @@ pub fn try_yield() {
         suspend_current_and_run_next()
     }
 }
-// pub fn suspend_current_and_run_next() {
-//     // There must be an application running.
-//     let task = take_current_task().unwrap();
-
-//     // ---- hold current PCB lock
-//     let mut task_inner = task.acquire_inner_lock();
-//     let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
-//     // Change status to Ready
-//     task_inner.task_status = TaskStatus::Ready;
-//     drop(task_inner);
-//     // ---- release current PCB lock
-
-//     // push back to ready queue.
-//     add_task(task);
-//     // jump to scheduling cycle
-//     schedule(task_cx_ptr);
-// }
 
 pub fn suspend_current_and_run_next() {
+    // ==== 关键修复：关中断 ====
+    unsafe { sstatus::clear_sie(); }
+
     // 尝试获取当前任务，使用 if let 处理 None 的情况
     if let Some(task) = take_current_task() {
         // ---- hold current PCB lock
@@ -78,16 +65,21 @@ pub fn suspend_current_and_run_next() {
         // jump to scheduling cycle
         schedule(task_cx_ptr);
     } else {
-        // 如果当前没有任务运行（例如在 Idle 循环中触发了中断），
-        // 不需要进行挂起操作，直接返回即可。
-        // 这里的行为取决于你的架构，通常直接返回让中断处理结束，回到 Idle 循环继续等待任务。
+        // 如果没有任务（例如 Idle 被中断），这里的处理略有不同，
+        // 但通常 trap_return 会处理。如果走到这里，最好也恢复中断（如果需要）
+        // 不过 schedule 内部会处理 idle 切换
     }
 }
 
 pub fn block_current_and_run_next() {
+    // ==== 关键修复：关中断 ====
+    // 防止在持有 TASK_MANAGERS 锁或 TCB 锁时被 Timer 中断打断导致死锁
+    log::info!("[block] Enter. Disabling interrupts...");
+    unsafe { sstatus::clear_sie(); }
+    log::info!("[block] Interrupts disabled.");
     // There must be an application running.
     let task = take_current_task().unwrap();
-
+    log::info!("[block] Current task taken. Pid: {}", task.pid.0);
     // ---- hold current PCB lock
     let mut task_inner = task.acquire_inner_lock();
     let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
@@ -95,11 +87,19 @@ pub fn block_current_and_run_next() {
     task_inner.task_status = TaskStatus::Interruptible;
     drop(task_inner);
     // ---- release current PCB lock
+    log::info!("[block] Task status set to Interruptible.");
+
+    // push to interruptible queue of scheduler
+    log::info!("[block] Calling sleep_interruptible...");
+    // ---- release current PCB lock
 
     // push to interruptible queue of scheduler, so that it won't be scheduled.
     sleep_interruptible(task);
+    log::info!("[block] sleep_interruptible returned. Calling schedule...");
+
     // jump to scheduling cycle
     schedule(task_cx_ptr);
+    log::info!("[block] schedule returned (Resumed).");
 }
 
 pub fn do_exit(task: Arc<TaskControlBlock>, exit_code: u32) {
@@ -176,6 +176,9 @@ pub fn do_exit(task: Arc<TaskControlBlock>, exit_code: u32) {
 }
 
 pub fn exit_current_and_run_next(exit_code: u32) -> ! {
+    // ==== 关键修复：关中断 ====
+    unsafe { sstatus::clear_sie(); }
+
     // take from Processor
     let task = take_current_task().unwrap();
     do_exit(task, exit_code);
@@ -185,53 +188,10 @@ pub fn exit_current_and_run_next(exit_code: u32) -> ! {
     panic!("Unreachable");
 }
 
-/*
 pub fn exit_group_and_run_next(exit_code: u32) -> ! {
-    // exit current, take from Processor
-    let task = take_current_task().unwrap();
-    let tgid = task.tgid;
-    do_exit(task, exit_code);
+    // ==== 关键修复：关中断 ====
+    unsafe { sstatus::clear_sie(); }
 
-    let mut exit_list = VecDeque::new();
-
-    let mut manager = manager::TASK_MANAGER.lock();
-    let mut remain = manager.ready_queue.len();
-    while let Some(task) = manager.ready_queue.pop_front() {
-        if task.tgid == tgid {
-            exit_list.push_back(task);
-        } else {
-            manager.ready_queue.push_back(task);
-        }
-        remain -= 1;
-        if remain == 0 {
-            break;
-        }
-    }
-    let mut remain = manager.interruptible_queue.len();
-    while let Some(task) = manager.interruptible_queue.pop_front() {
-        if task.tgid == tgid {
-            exit_list.push_back(task);
-        } else {
-            manager.interruptible_queue.push_back(task);
-        }
-        remain -= 1;
-        if remain == 0 {
-            break;
-        }
-    }
-    drop(manager);
-
-    for task in exit_list.into_iter() {
-        do_exit(task, exit_code);
-    }
-    // we do not have to save task context
-    let mut _unused = TaskContext::zero_init();
-    schedule(&mut _unused as *mut _);
-    panic!("Unreachable");
-}
-*/
-
-pub fn exit_group_and_run_next(exit_code: u32) -> ! {
     let task = take_current_task().unwrap();
     let tgid = task.tgid;
     do_exit(task, exit_code);
@@ -239,7 +199,6 @@ pub fn exit_group_and_run_next(exit_code: u32) -> ! {
     let mut exit_list = VecDeque::new();
 
     // 遍历所有 CPU 的管理器
-    // 注意：这里需要引入 TASK_MANAGERS
     use manager::TASK_MANAGERS; 
     
     for manager_mutex in TASK_MANAGERS.iter() {
