@@ -209,7 +209,7 @@ pub fn sys_nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> isize {
     wait_with_timeout(Arc::downgrade(&task), end);
     log::info!("[Syscall] wait_with_timeout returned. Dropping task Arc.");
     drop(task);
-    // log::info!("[Syscall] Calling block_current_and_run_next. Good night!");
+    log::info!("[Syscall] Calling block_current_and_run_next. Good night!");
     block_current_and_run_next();
     let task = current_task().unwrap();
     let inner = task.acquire_inner_lock();
