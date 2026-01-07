@@ -195,16 +195,31 @@ pub fn sys_nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> isize {
         Err(errno) => return errno,
     };
 
-    let end = TimeSpec::now() + req;
-    log::info!("[Sleep] Task {} sleeping until sec:{} nsec:{}", 
-        task.pid.0, end.tv_sec, end.tv_nsec);
-    wait_with_timeout(Arc::downgrade(&task), end);
-    drop(task);
+    // ==== 修改开始 ====
+    let now = TimeSpec::now();
+    let end = now + req;
+    log::info!("[Syscall] Task {} nanosleep START. Now: {:?}, Req: {:?}, WakeTarget: {:?}", 
+        task.pid.0, now, req, end);
+    // ==== 修改结束 ====
 
+    // let end = TimeSpec::now() + req;
+    // log::info!("[Sleep] Task {} sleeping until sec:{} nsec:{}", 
+    //     task.pid.0, end.tv_sec, end.tv_nsec);
+    log::info!("[Syscall] Calling wait_with_timeout...");
+    wait_with_timeout(Arc::downgrade(&task), end);
+    log::info!("[Syscall] wait_with_timeout returned. Dropping task Arc.");
+    drop(task);
+    // log::info!("[Syscall] Calling block_current_and_run_next. Good night!");
     block_current_and_run_next();
     let task = current_task().unwrap();
     let inner = task.acquire_inner_lock();
     let now = TimeSpec::now();
+    let end = now + req;
+    
+    // ==== 添加日志 ====
+    log::info!("[Syscall] Task {} nanosleep start. Now: {:?}, Req: {:?}, End: {:?}", 
+        task.pid.0, now, req, end);
+    // ================
     // this is a little different with manual (do not consider sigmask)
     // but now we have to compromise
     if inner.sigpending.is_empty() {

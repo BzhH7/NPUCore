@@ -92,6 +92,20 @@ pub fn run_tasks() {
             // 没有任务，释放锁
             drop(processor);
 
+            // 关键调试日志：确认是否进入 Idle
+            log::info!("[run_tasks] No tasks. Enabling interrupts and entering wfi...");
+
+            // ==== DEBUG START: 检查中断寄存器 ====
+            let sstatus_val = unsafe { riscv::register::sstatus::read() };
+            let sie_val = unsafe { riscv::register::sie::read() };
+            let sip_val = unsafe { riscv::register::sip::read() };
+            let time_val = unsafe { riscv::register::time::read() };
+            // sstatus.sie() 是全局中断使能位 (Bit 1)
+            // sie.stie() 是时钟中断使能位 (Bit 5)
+            // sip.stip() 是时钟中断等待位 (Bit 5)
+            log::info!("[Idle Debug] sstatus: {:?}, sie: {:?}, sip: {:?}, time: {}", 
+                sstatus_val, sie_val, sip_val, time_val);
+            // ==== DEBUG END ====
             // 3. 【关键】Idle 状态处理
             // 必须开启中断才能被唤醒（响应时钟中断或其他），
             // 使用 wfi 等待以降低功耗。
@@ -99,6 +113,7 @@ pub fn run_tasks() {
                 sstatus::set_sie(); 
                 riscv::asm::wfi(); 
             }
+            log::info!("[run_tasks] Woke up from wfi!");
         }
     }
 }
@@ -161,15 +176,16 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     
     // 【关键修复】关中断防止死锁
     unsafe { sstatus::clear_sie(); }
-    
+    // log::info!("[schedule] Getting idle_ta   sk_cx_ptr...");
     let idle_task_cx_ptr = PROCESSORS[cpu_id].lock().get_idle_task_cx_ptr();
-    
+    // log::info!("[schedule] Switching to idle...");
     // 切换回 idle 循环
     unsafe {
         __switch(switched_task_cx_ptr, idle_task_cx_ptr);
         // 回来后，说明任务又被调度了，恢复中断（可选，通常由 sstatus 自动恢复）
         // sstatus::set_sie(); 
     }
+    // log::info!("[schedule] Back from idle (Resumed)!");
 }
 
 pub fn current_cpu_id() -> usize {

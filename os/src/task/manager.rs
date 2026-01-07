@@ -486,8 +486,10 @@ wake_interruptible 时直接锁 TASK_MANAGERS[task.last_cpu] 进行唤醒。
 */
 //简单遍历（推荐初期使用） 唤醒时遍历所有核的管理器，找到并唤醒。
 pub fn sleep_interruptible(task: Arc<TaskControlBlock>) {
-    let cpu_id = current_cpu_id();
+let cpu_id = current_cpu_id();
+    log::info!("[sleep_interruptible] Locking TASK_MANAGERS[{}]...", cpu_id);
     TASK_MANAGERS[cpu_id].lock().add_interruptible(task);
+    log::info!("[sleep_interruptible] Task added to queue. Unlocked.");
 }
 
 pub fn wake_interruptible(task: Arc<TaskControlBlock>) {
@@ -666,10 +668,16 @@ impl TimeoutWaitQueue {
     }
     /// 唤醒所有超时的任务
     pub fn wake_expired(&mut self, now: TimeSpec) {
+        // 入口日志，确认中断是否触发
+        log::info!("[wake_expired] Enter. Checking expired tasks...");
         // 获取任务管理器
         let cpu_id = current_cpu_id();
 
+        // 调试日志：尝试获取 TASK_MANAGERS 锁
+        log::info!("[wake_expired] Trying to lock TASK_MANAGERS[{}]...", cpu_id);
         let mut manager = TASK_MANAGERS[cpu_id].lock();
+        log::info!("[wake_expired] Locked TASK_MANAGERS. Processing...");
+
         // 循环处理超时任务
         while let Some(waiter) = self.inner.pop() {
             // 堆中剩下的任务还没有超时
@@ -687,21 +695,26 @@ impl TimeoutWaitQueue {
                 // 将弱引用升级为强引用
                 match waiter.task.upgrade() {
                     Some(task) => {
-
-                        log::info!("[Wake] Waking up task {}", task.pid.0);
-
-                        // 获取内部锁
+                        // ==== 修改开始 ====
+                        let pid = task.pid.0;
                         let mut inner = task.acquire_inner_lock();
+                        let current_status = inner.task_status;
+
+                        // 打印调试日志，查看检查时的状态
+                        log::info!("[Timer] Checking timeout for Task {}. Status: {:?}", pid, current_status);
+
                         match inner.task_status {
-                            // 若状态为可中断状态，改为就绪态
                             super::TaskStatus::Interruptible => {
+                                log::info!("[Timer] Waking up Task {}", pid);
                                 inner.task_status = super::task::TaskStatus::Ready
                             }
-                            // 对于处于 就绪态或运行态的任务，不需要做唤醒操作
-                            // 对于处于僵尸态的任务，做唤醒操作会搞砸进程管理
-                            _ => continue,
+                            // ⚠️ 关键点：如果这里捕获到了 Running 状态，说明发生了竞态条件
+                            _ => {
+                                log::warn!("[Timer] RACE DETECTED! Task {} timeout triggered but status is {:?} (not Interruptible). Task was DROPPED from queue!", pid, current_status);
+                                drop(inner);
+                                continue; 
+                            }
                         }
-                        // 释放锁
                         drop(inner);
                         log::trace!(
                             "[wake_expired] pid: {}, timeout: {:?}",
@@ -717,6 +730,7 @@ impl TimeoutWaitQueue {
                     }
                 }
             }
+            log::info!("[wake_expired] Finished. Unlocking TASK_MANAGERS.");
         }
     }
     #[allow(unused)]
@@ -736,7 +750,16 @@ lazy_static! {
 /// 这个函数会将一个`task`添加到全局超时等待队列中，但是不会阻塞它
 /// 如果想要阻塞一个任务，使用`block_current_and_run_next()`函数
 pub fn wait_with_timeout(task: Weak<TaskControlBlock>, timeout: TimeSpec) {
-    TIMEOUT_WAITQUEUE.lock().add_task(task, timeout)
+    // 调试日志：尝试获取锁
+    log::info!("[wait_with_timeout] Trying to lock TIMEOUT_WAITQUEUE...");
+    let mut queue = TIMEOUT_WAITQUEUE.lock();
+    log::info!("[wait_with_timeout] Locked TIMEOUT_WAITQUEUE. Adding task...");
+    
+    queue.add_task(task, timeout);
+    
+    // 锁会在 queue 离开作用域时释放，打印日志确认
+    drop(queue); 
+    log::info!("[wait_with_timeout] Unlocked TIMEOUT_WAITQUEUE.");
 }
 
 /// 唤醒全局超时等待队列中所有已超时的任务
