@@ -40,6 +40,7 @@ extern "C" {
     pub fn __alltraps();
     pub fn __restore();
     pub fn __call_sigreturn();
+    pub fn __kernelvec(); // 引入新的汇编入口
 }
 
 pub fn init() {
@@ -48,7 +49,8 @@ pub fn init() {
 
 fn set_kernel_trap_entry() {
     unsafe {
-        stvec::write(trap_from_kernel as usize, TrapMode::Direct);
+        // 修改：使用 __kernelvec 作为内核陷阱入口
+        stvec::write(__kernelvec as usize, TrapMode::Direct);
     }
 }
 
@@ -232,7 +234,8 @@ pub fn trap_return() -> ! {
 }
 
 #[no_mangle]
-pub fn trap_from_kernel() -> ! {
+// 修改返回值类型，不再是 -> !，因为现在它会返回给汇编代码
+pub fn trap_from_kernel() {
     use riscv::register::{sstatus, sepc};
 
     let scause = scause::read();
@@ -241,19 +244,15 @@ pub fn trap_from_kernel() -> ! {
     match scause.cause() {
         Trap::Interrupt(Interrupt::SupervisorTimer) => {
             set_next_trigger();
+            do_wake_expired(); 
+
             if current_task().is_some() {
-                let saved_sepc = sepc::read();
-                let saved_sstatus = sstatus::read();
+                // suspend... 会保存当前任务状态并切换
+                // 当任务再次被调度时，它会从 suspend... 返回
+                // 然后函数结束，返回到汇编 __kernelvec
                 suspend_current_and_run_next();
-                unsafe {
-                    sepc::write(saved_sepc);
-                    core::arch::asm!("csrw sstatus, {}", in(reg) saved_sstatus.bits());
-                    core::arch::asm!("sret", options(noreturn));
-                }
             } else {
-                unsafe {
-                    core::arch::asm!("sret", options(noreturn));
-                }
+                // 如果是 Idle，直接返回，汇编会执行 sret
             }
         }
         _ => {
