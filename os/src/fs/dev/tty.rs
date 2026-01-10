@@ -156,45 +156,73 @@ impl File for Teletype {
         1
     }
 
-    #[cfg(not(any(feature = "board_k210")))]
+#[cfg(not(any(feature = "board_k210")))]
     fn read_user(&self, offset: Option<usize>, buf: UserBuffer) -> usize {
         if offset.is_some() {
             return ESPIPE as usize;
         }
-        let mut inner = self.inner.lock();
-        // todo: check foreground pgid
+        
         let mut count = 0;
         for ptr in buf {
+            let mut c: u8;
             loop {
-                //we have read a legal char
+                // 1. 获取锁，检查是否有字符
+                let mut inner = self.inner.lock();
+                
+                // 如果 last_char 是 255，尝试从硬件读取一次
+                if inner.last_char == 255 {
+                    inner.last_char = console_getchar() as u8;
+                }
+
+                // 检查是否读取到了有效字符
                 if inner.last_char != 255 {
+                    c = inner.last_char;
+                    // 读取后，暂时将 last_char 置无效（消费掉）
+                    // 注意：原逻辑是在循环末尾再次预读取，这里简化逻辑确保一致性
+                    inner.last_char = 255; 
+                    drop(inner); // 拿到字符后立即释放锁
                     break;
                 }
-                //if we have read some chars, we can return
-                if count > 0 {
-                    return count;
-                }
-                //we read no char, suspend the procedure
-                crate::task::suspend_current_and_run_next;
-                inner.last_char = console_getchar() as u8;
+
+                // 2. 如果没有字符，释放锁并挂起
+                drop(inner); // <--- 关键：挂起前必须释放锁！
+                crate::task::suspend_current_and_run_next(); // <--- 关键：加上括号！
             }
-            //we can guarantee last_char isn't a illegal char
+
+            // 3. 将字符写入用户缓冲区
             unsafe {
-                ptr.write_volatile(inner.last_char);
+                ptr.write_volatile(c);
             }
-            if inner.termios.lflag & LocalModes::ECHO.bits() != 0 {
-                if inner.last_char == '\r' as u8 {
+
+            // 4. 处理回显 (Echo)
+            // 重新获取锁来检查 ECHO 标志
+            let echo = {
+                let inner = self.inner.lock();
+                inner.termios.lflag & LocalModes::ECHO.bits() != 0
+            };
+
+            if echo {
+                // 在没有持有锁的情况下打印，防止死锁
+                if c == b'\r' {
                     print!("\n");
                 } else {
-                    print!("{}", inner.last_char as char);
+                    print!("{}", c as char);
                 }
             }
-            inner.last_char = console_getchar() as u8;
+
+            // 5. 预读取下一个字符（保持原逻辑的预读取行为）
+            // 虽然这步不是严格必要，但为了保持和原逻辑行为接近
+            let next = console_getchar() as u8;
+            if next != 255 {
+                let mut inner = self.inner.lock();
+                inner.last_char = next;
+            }
+
             count += 1;
         }
         count
     }
-
+    
     fn write_user(&self, offset: Option<usize>, user_buffer: UserBuffer) -> usize {
         if offset.is_some() {
             return ESPIPE as usize;
