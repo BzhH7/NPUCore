@@ -256,10 +256,10 @@ impl Ext4FileSystem {
     /// + `Result<Ext4InodeRef>` - 新文件的inode
     pub fn create(&self, parent: u32, name: &str, inode_mode: u16) -> Result<Ext4InodeRef, isize> {
         // println!("in1, parent:{:?}", parent);
-        let a = 1+2+parent;
-        log::info!("a = {:?}", a);
-        // Ext4FileSystem被锁了？
-        let dummy = self.get_inode_ref(a);
+        // let a = 1+2+parent;
+        // log::info!("a = {:?}", a);
+        // // Ext4FileSystem被锁了？
+        // let dummy = self.get_inode_ref(a);
         // println!("dummy = {:#?}", dummy);
         // 获取父目录的inode
         let mut parent_inode_ref = self.get_inode_ref(parent);

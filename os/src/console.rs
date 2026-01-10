@@ -3,6 +3,7 @@ use crate::task::current_task;
 use core::fmt::{self, Write};
 use log::{self, Level, LevelFilter, Log, Metadata, Record};
 use spin::Mutex;
+use riscv::register::sstatus;
 
 struct KernelOutput;
 
@@ -29,9 +30,17 @@ impl Write for KernelOutput {
 static STDOUT: Mutex<KernelOutput> = Mutex::new(KernelOutput);
 
 pub fn print(args: fmt::Arguments) {
-    // 3. 获取锁 -> 打印 -> 自动释放
-    // .lock() 会返回一个 Guard，它自动解引用为 KernelOutput，所以可以直接调用 write_fmt
+    // 【修复】：在获取锁之前关闭中断，防止在持有锁时被时钟中断抢占导致死锁
+    let sie = sstatus::read().sie();
+    if sie {
+        unsafe { sstatus::clear_sie(); }
+    }
+
     STDOUT.lock().write_fmt(args).unwrap();
+
+    if sie {
+        unsafe { sstatus::set_sie(); }
+    }
 }
 
 // 下面的宏定义不用动，它们会调用上面的 print 函数
