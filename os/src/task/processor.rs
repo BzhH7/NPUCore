@@ -111,7 +111,7 @@ pub fn run_tasks() {
             // 使用 wfi 等待以降低功耗。
             unsafe {
                 sstatus::set_sie(); 
-                riscv::asm::wfi(); 
+                // riscv::asm::wfi(); 
             }
             log::info!("[run_tasks] Woke up from wfi!");
         }

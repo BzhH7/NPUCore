@@ -244,7 +244,7 @@ pub fn rust_main(hart_id: usize) -> ! {
     //     所有核心通用逻辑
     // ==========================
     
-    // unsafe { riscv::register::sstatus::set_sie(); }
+    unsafe { riscv::register::sstatus::set_sie(); }
 
     // 进入调度循环
     println!("[kernel] Hart {} entering task loop...", hart_id);

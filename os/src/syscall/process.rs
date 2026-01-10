@@ -195,44 +195,46 @@ pub fn sys_nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> isize {
         Err(errno) => return errno,
     };
 
-    // ==== 修改开始 ====
-    let now = TimeSpec::now();
-    let end = now + req;
-    log::info!("[Syscall] Task {} nanosleep START. Now: {:?}, Req: {:?}, WakeTarget: {:?}", 
-        task.pid.0, now, req, end);
-    // ==== 修改结束 ====
+    let start = TimeSpec::now();
+    let end = start + req;
 
-    // let end = TimeSpec::now() + req;
-    // log::info!("[Sleep] Task {} sleeping until sec:{} nsec:{}", 
-    //     task.pid.0, end.tv_sec, end.tv_nsec);
-    log::info!("[Syscall] Calling wait_with_timeout...");
-    wait_with_timeout(Arc::downgrade(&task), end);
-    log::info!("[Syscall] wait_with_timeout returned. Dropping task Arc.");
-    drop(task);
-    log::info!("[Syscall] Calling block_current_and_run_next. Good night!");
-    block_current_and_run_next();
-    let task = current_task().unwrap();
-    let inner = task.acquire_inner_lock();
-    let now = TimeSpec::now();
-    let end = now + req;
-    
-    // ==== 添加日志 ====
-    log::info!("[Syscall] Task {} nanosleep start. Now: {:?}, Req: {:?}, End: {:?}", 
-        task.pid.0, now, req, end);
-    // ================
-    // this is a little different with manual (do not consider sigmask)
-    // but now we have to compromise
-    if inner.sigpending.is_empty() {
-        assert!(end <= now);
-        if !rem.is_null() {
-            copy_to_user(token, &TimeSpec::new(), rem).unwrap();
+    // 【修复】：使用 loop 循环处理虚假唤醒 (Spurious Wakeup)
+    loop {
+        let now = TimeSpec::now();
+        if now >= end {
+            // 时间到了，成功返回
+            if !rem.is_null() {
+                copy_to_user(token, &TimeSpec::new(), rem).unwrap();
+            }
+            return SUCCESS;
         }
-        SUCCESS
-    } else {
-        if !rem.is_null() {
-            copy_to_user(token, &(end - now), rem).unwrap();
+
+        // 时间没到，加入定时器队列
+        wait_with_timeout(Arc::downgrade(&task), end);
+        // drop(task); // 必须在切换前释放 Arc
+        
+        // 让出 CPU，等待唤醒
+        block_current_and_run_next();
+
+        // ---- 唤醒后 ----
+        let task = current_task().unwrap();
+        let inner = task.acquire_inner_lock();
+        
+        // 检查是否被信号中断
+        if !inner.sigpending.is_empty() {
+            let now = TimeSpec::now();
+            if !rem.is_null() {
+                // 返回剩余时间
+                if end > now {
+                    copy_to_user(token, &(end - now), rem).unwrap();
+                } else {
+                    copy_to_user(token, &TimeSpec::new(), rem).unwrap();
+                }
+            }
+            return EINTR;
         }
-        EINTR
+        // 如果没有信号，说明是定时器唤醒或虚假唤醒，
+        // loop 会回到开头检查 now >= end，如果没到时间会继续睡。
     }
 }
 
@@ -1097,48 +1099,52 @@ pub fn sys_clock_nanosleep(
         Err(errno) => return errno,
     };
     
-    info!(
-        "[sys_clock_nanosleep] clk_id: {}, flags: {:?}, rqtp: {:?}, rmtp: {:?}",
-        clk_id, flags, req, rmtp
-    );
-    
     // 目前只支持 CLOCK_REALTIME (0) 和 CLOCK_MONOTONIC (1)
     if clk_id > 1 {
         return EINVAL;
     }
     
-    // 目前只支持 TIMER_ABSTIME 标志位
+    // 目前只支持 TIMER_ABSTIME (1) 和 相对时间 (0)
     if flags != 0 && flags != 1 {
         return EINVAL;
     }
     
     let end = if flags == 1 {
-        // TIMER_ABSTIME: 绝对时间
-        req
+        req // 绝对时间
     } else {
-        // 相对时间
-        TimeSpec::now() + req
+        TimeSpec::now() + req // 相对时间
     };
     
-    wait_with_timeout(Arc::downgrade(&task), end);
-    drop(task);
+    // 【修复】：同样的 loop 逻辑
+    loop {
+        let now = TimeSpec::now();
+        if now >= end {
+            if !rmtp.is_null() {
+                copy_to_user(token, &TimeSpec::new(), rmtp).unwrap();
+            }
+            return SUCCESS;
+        }
 
-    block_current_and_run_next();
-    let task = current_task().unwrap();
-    let inner = task.acquire_inner_lock();
-    let now = TimeSpec::now();
-    
-    if inner.sigpending.is_empty() {
-        assert!(end <= now);
-        if !rmtp.is_null() {
-            copy_to_user(token, &TimeSpec::new(), rmtp).unwrap();
+        wait_with_timeout(Arc::downgrade(&task), end);
+        // drop(task);
+
+        block_current_and_run_next();
+        
+        let task = current_task().unwrap();
+        let inner = task.acquire_inner_lock();
+        
+        if !inner.sigpending.is_empty() {
+            let now = TimeSpec::now();
+            if !rmtp.is_null() {
+                if end > now {
+                    copy_to_user(token, &(end - now), rmtp).unwrap();
+                } else {
+                    copy_to_user(token, &TimeSpec::new(), rmtp).unwrap();
+                }
+            }
+            return EINTR;
         }
-        SUCCESS
-    } else {
-        if !rmtp.is_null() {
-            copy_to_user(token, &(end - now), rmtp).unwrap();
-        }
-        EINTR
+        // 继续循环检查时间
     }
 }
 

@@ -45,6 +45,12 @@ extern "C" {
 
 pub fn init() {
     set_kernel_trap_entry();
+
+    // 我们使用 SBI 轮询 (console_getchar) 来读取输入，不需要处理 PLIC 中断。
+    // 如果开启而不处理 (Claim/Complete)，会导致中断风暴卡死系统。
+    unsafe {
+        riscv::register::sie::clear_sext();
+    }
 }
 
 fn set_kernel_trap_entry() {
@@ -232,42 +238,67 @@ pub fn trap_return() -> ! {
         );
     }
 }
-
+static mut TICKS: usize = 0;
 #[no_mangle]
-// 修改返回值类型，不再是 -> !，因为现在它会返回给汇编代码
 pub fn trap_from_kernel() {
     use riscv::register::{sstatus, sepc};
 
+    // === 读取 tp ===
+    let raw_tp: usize;
+    unsafe { core::arch::asm!("mv {}, tp", out(reg) raw_tp); }
+    // ==============
+
     let scause = scause::read();
     let stval = stval::read();
+    // 获取真正的内核崩溃地址
+    let kernel_pc = sepc::read();
     
     match scause.cause() {
         Trap::Interrupt(Interrupt::SupervisorTimer) => {
             set_next_trigger();
             do_wake_expired(); 
 
-            if current_task().is_some() {
-                // suspend... 会保存当前任务状态并切换
-                // 当任务再次被调度时，它会从 suspend... 返回
-                // 然后函数结束，返回到汇编 __kernelvec
-                suspend_current_and_run_next();
-            } else {
-                // 如果是 Idle，直接返回，汇编会执行 sret
+            // === 【诊断代码】每 100 次时钟中断打印一个点 ===
+            unsafe {
+                TICKS += 1;
+                if TICKS % 100 == 0 {
+                    // 只让主核打印，避免输出混乱
+                    if crate::task::processor::current_cpu_id() == 0 {
+                        print!(".");
+                    }
+                }
             }
+            // =============================================
+
+
+            if current_task().is_some() {
+                suspend_current_and_run_next();
+            }
+        }
+        // 【修复】：添加对内核态外部中断的处理
+        // 防止 UART 中断打断内核执行时导致 Panic
+        Trap::Interrupt(Interrupt::SupervisorExternal) => {
+            // 这里可以选择忽略，或者像 trap_handler 那样统计计数
+            // 如果使用 PLIC，应该在这里 claim/complete，但目前由于你是轮询模式，
+            // 收到这个中断说明中断屏蔽没做好，或者 OpenSBI 转发了中断。
+            // 最安全的做法是什么都不做，直接返回，或者让出 CPU。
+            
+            // 简单的防 Panic 处理：
+            crate::fs::dev::interrupts::Interrupts::increment_interrupt_count(9);
+            
+            // 甚至可以选择让出 CPU（如果是在等待输入的循环中被中断）
+            // if current_task().is_some() {
+            //     suspend_current_and_run_next();
+            // }
         }
         _ => {
             panic!(
-                "a trap {:?} from kernel! bad addr = {:#x}, bad instruction = {:#x}",
+                "Kernel Panic! Trap: {:?}, Bad Addr: {:#x}, PC: {:#x}, TP: {}, CPU_ID: {}",
                 scause.cause(),
                 stval,
-                match current_task() {
-                    Some(task) => {
-                        task.acquire_inner_lock().get_trap_cx().gp.pc
-                    }
-                    None => {
-                        sepc::read()
-                    }
-                }
+                kernel_pc,
+                raw_tp, // 打印 tp 值
+                crate::task::processor::current_cpu_id() // 打印逻辑 CPU ID
             );
         }
     }
