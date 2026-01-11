@@ -91,7 +91,11 @@ impl Ext4OSInode {
 
 impl Ext4OSInode {
     pub fn first_root_inode(ext4fs: &Arc<dyn VFS>) -> Arc<dyn File> {
-        let ext4fs_concrete = Arc::downcast::<Ext4FileSystem>(ext4fs.clone()).unwrap();
+        let ext4fs_concrete = ext4fs
+            .clone()
+            .downcast_arc::<Ext4FileSystem>()
+            .ok() // 转为 Option，丢弃错误详情(因为 dyn VFS 没有 Debug)
+            .expect("failed to downcast VFS to Ext4FileSystem");
         // 先获取ROOT_INODE
 
         let root_inode = todo!();
@@ -596,8 +600,12 @@ impl File for Ext4OSInode {
         let father_inode = dir_node.father_arc();
         let parent_osinode = &father_inode.file;
         // println!("[kernel in unlink] parent osinode: {:?}", parent_osinode.get_file_type());
-        let parent = Arc::downcast::<Ext4OSInode>(parent_osinode.clone())
+        let parent = parent_osinode
+            .clone()
+            .downcast_arc::<Ext4OSInode>() 
             .map_err(|_| ENOTEMPTY)?;
+
+        let mut parent_inode_ref = parent.inode.lock();
         let mut parent_inode_ref = parent.inode.lock();
 
         // 拿到要删除的 child inode 引用
