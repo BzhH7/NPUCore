@@ -251,14 +251,18 @@ impl FatInode {
     /// # 返回值
     /// 指向Inode的指针
     pub fn root_inode(efs: &Arc<dyn VFS>) -> Arc<Self> {
-        let efs_concrete = Arc::downcast::<EasyFileSystem>(efs.clone()).unwrap();
+        // 修改点：指针强转
+        let efs_ptr = Arc::as_ptr(efs) as *const EasyFileSystem;
+        let efs_concrete = unsafe { &*efs_ptr };
+        
         let rt_clus = efs_concrete.root_clus;
         Self::new(
             rt_clus,
             DiskInodeType::Directory,
             None,
             None,
-            Arc::clone(&efs_concrete),
+            // 注意：这里需要重新包装成 Arc，建议通过 efs_ptr 转换或 clone 原始 Arc
+            unsafe { Arc::from_raw(efs_ptr) }, 
         )
     }
 }
@@ -873,6 +877,10 @@ impl InodeTrait for FatInode {
     /// Get self's file content lock
     /// # Return Value
     /// a lock of file content
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+        self
+    }
+
     #[inline(always)]
     fn read(&self) -> RwLockReadGuard<InodeLock> {
         self.inode_lock.read()
@@ -1458,8 +1466,12 @@ impl InodeTrait for FatInode {
         ent: &FATShortDirEnt,
         offset: u32,
     ) -> Arc<dyn InodeTrait> {
-        let parent_dir_specific = Arc::downcast::<FatInode>(parent_dir.clone()).unwrap();
-        // let shit = parent_dir.clone();
+        let parent_dir_specific = parent_dir
+            .clone()
+            .as_any_arc()
+            .downcast::<FatInode>()
+            .expect("parent_dir is not a FatInode");
+        
         let inode = Self::from_fat_ent(&parent_dir_specific, ent, offset);
         inode
     }
@@ -1475,7 +1487,11 @@ impl InodeTrait for FatInode {
         // Self: Sized,
     {
         // let parent_dir_specific = parent_dir.as_any().downcast_ref::<Arc<Self>>().ok_or(())?;
-        let parent_dir_specific = Arc::downcast::<FatInode>(parent_dir.clone()).unwrap();
+        let parent_dir_specific = parent_dir
+            .clone()
+            .as_any_arc() // 使用我们在 Trait 中新加的方法
+            .downcast::<FatInode>()
+            .unwrap();
         // Genrate directory entries
         let (short_ent, long_ents) = Self::gen_dir_ent(
             // parent_dir,
@@ -1539,7 +1555,11 @@ impl InodeTrait for FatInode {
         Self: Sized,
     {
         // 将父Inode下转为具体的Inode类型
-        let parent_dir_specific = Arc::downcast::<FatInode>(parent_dir.clone()).unwrap();
+        let parent_dir_specific = parent_dir
+            .clone()
+            .as_any_arc()
+            .downcast::<FatInode>()
+            .unwrap();
         // 如果父Inode是普通文件或者名称长度大于256，返回错误
         if parent_dir.is_file() || name.len() >= 256 {
             Err(())

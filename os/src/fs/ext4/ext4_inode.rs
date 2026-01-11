@@ -91,7 +91,9 @@ pub struct Linux2 {
 #[allow(unused)]
 impl Ext4Inode {
     pub fn root_inode(ext4fs: &Arc<dyn VFS>) -> Arc<Self> {
-        let ext4fs = Arc::downcast::<Ext4FileSystem>(ext4fs.clone()).unwrap();
+        let ext4fs_ptr = Arc::as_ptr(ext4fs) as *const Ext4FileSystem;
+        let ext4fs = unsafe { &*ext4fs_ptr };
+        
         // 尝试获取根目录的Inode节点
         let root_inode = ext4fs.get_inode_ref(ROOT_INODE);
         // root_inode.inode.clone()
@@ -533,6 +535,10 @@ impl Ext4Inode {
 
 #[allow(unused)]
 impl InodeTrait for Ext4Inode {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Send + Sync> {
+        self
+    }
+
     fn read(&self) -> RwLockReadGuard<InodeLock> {
         todo!()
     }

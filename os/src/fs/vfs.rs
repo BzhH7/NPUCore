@@ -62,7 +62,12 @@ impl VFS {
         match vfs.get_filesystem_type() {
             FS_Type::Fat32 => FatOSInode::new(FatInode::root_inode(vfs)),
             FS_Type::Ext4 => {
-                let vfs_concrete = Arc::downcast::<Ext4FileSystem>(vfs.clone()).unwrap();
+                let vfs_concrete = vfs
+                    .clone()
+                    .downcast_arc::<Ext4FileSystem>()
+                    .ok() // 丢弃 Err(Arc<dyn VFS>)，变成 Option<Arc<Ext4FileSystem>>
+                    .expect("failed to downcast to Ext4FileSystem"); // Option 的 expect 不需要 T 实现 Debug
+
                 let root_inode = vfs_concrete.get_inode_ref(ROOT_INODE);
                 Ext4OSInode::new(root_inode, vfs_concrete)
             }
