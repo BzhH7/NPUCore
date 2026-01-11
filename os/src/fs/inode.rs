@@ -16,6 +16,7 @@ pub struct InodeLock;
 
 #[allow(unused)]
 pub trait InodeTrait: DowncastSync {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn Any + Send + Sync>;
     fn read(&self) -> RwLockReadGuard<InodeLock>;
     fn write(&self) -> RwLockWriteGuard<InodeLock>;
     fn get_file_type_lock(&self) -> MutexGuard<DiskInodeType>;
