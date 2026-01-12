@@ -1,6 +1,6 @@
-#![feature(asm_experimental_arch)]
-#![feature(naked_functions)]
-#![feature(naked_asm)]
+// #![feature(asm_experimental_arch)]
+// #![feature(naked_functions)]
+// #![feature(naked_asm)]
 
 mod context;
 mod mem_access;

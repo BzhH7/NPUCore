@@ -6,7 +6,7 @@ MODE ?= release
 
 .PHONY: all $(ARCHS) clean
 
-all: $(ARCHS)
+all: rv64
 
 $(ARCHS):
 	@echo "Building for ARCH=$@"
