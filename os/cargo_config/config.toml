@@ -2,6 +2,10 @@
 # target = "loongarch64-unknown-linux-gnu"
 target = "riscv64gc-unknown-none-elf"
 
+[unstable]
+build-std = ["core", "compiler_builtins", "alloc"]
+build-std-features = ["compiler-builtins-mem"]
+
 [target.loongarch64-unknown-none]
 rustflags = [
     "-Clink-arg=-Tsrc/hal/arch/loongarch64/linker.ld",
@@ -18,8 +22,14 @@ rustflags = [
     "-Cforce-frame-pointers=yes",
 ]
 
-[source.crates-io]
-replace-with = "vendored-sources"
+#[source.crates-io]
+#replace-with = "vendored-sources"
 
-[source.vendored-sources]
-directory = "vendor"
+#[source.vendored-sources]
+#directory = "vendor"
+
+[source.crates-io]
+replace-with = 'rsproxy-sparse'
+
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
