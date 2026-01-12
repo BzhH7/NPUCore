@@ -33,30 +33,45 @@ impl FileSystem {
 }
 
 pub fn pre_mount() -> FS_Type {
-    // 先读取块设备的第512个字节看是不是0x55AA
-    // 来判断是不是fat32
-    // 如果是fat32，返回FS_Type::Fat32
-    // 否则尝试获取超级块的魔数，如果是0xEF53，返回FS_Type::Ext4
-    // 否则返回FS_Type::Null
+    // 获取块设备
     let block_device = BLOCK_DEVICE.clone();
     let mut buf = [0u8; BLOCK_SIZE];
+
+    // 1. 判断是否为 FAT32
+    // 读取第 0 块
     block_device.read_block(0, &mut buf);
-    // 判断第512个字节是不是0x55AA
+    // 判断第 510 和 511 字节是否为 0x55AA
     if buf[510] == 0x55 && buf[511] == 0xAA {
         println!("[fs] found fat32 filesystem");
         return FS_Type::Fat32;
-    } else {
-        let superblock_offset = 1024;
-        let magic_number_high_index = superblock_offset + 56;
-        let magic_number_low_index = superblock_offset + 57;
-        let magic_number =
-            u16::from_le_bytes([buf[magic_number_high_index], buf[magic_number_low_index]]);
-        println!("[fs] read magic number: {}", magic_number);
-        if magic_number == 0xEF53 {
-            println!("[fs] found ext4 filesystem");
-            return FS_Type::Ext4;
-        }
     }
+
+    // 2. 判断是否为 Ext4
+    // Ext4 超级块位于磁盘偏移 1024 字节处
+    // 魔数位于超级块偏移 0x38 (56) 字节处 -> 总偏移 1024 + 56 = 1080
+    let magic_offset_global = 1080;
+    
+    // 计算所在的块号和块内偏移
+    let ext4_block_id = magic_offset_global / BLOCK_SIZE;
+    let ext4_offset_in_block = magic_offset_global % BLOCK_SIZE;
+
+    // 如果 Ext4 魔数不在第 0 块（例如块大小为 512 时，它在第 2 块），需要重新读取
+    if ext4_block_id != 0 {
+        block_device.read_block(ext4_block_id, &mut buf);
+    }
+
+    // 读取魔数
+    let magic_number = u16::from_le_bytes([
+        buf[ext4_offset_in_block], 
+        buf[ext4_offset_in_block + 1]
+    ]);
+    
+    println!("[fs] read magic number: {:#x}", magic_number); // 使用十六进制打印更直观
+    if magic_number == 0xEF53 {
+        println!("[fs] found ext4 filesystem");
+        return FS_Type::Ext4;
+    }
+
     println!("[fs] no filesystem found");
     FS_Type::Null
 }
