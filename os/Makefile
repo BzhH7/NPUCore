@@ -55,6 +55,9 @@ la64-run:
 comp:
 	make -f make/$(CURR_ARCH).mk comp
 
+test:
+	make -f make/$(CURR_ARCH).mk test
+
 clean:
 	for arch in $(ARCHS); do \
 		make ARCH=$$arch -f make/$$arch.mk clean; \
