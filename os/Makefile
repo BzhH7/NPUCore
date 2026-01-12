@@ -1,5 +1,5 @@
-ARCHS = rv64
-CURR_ARCH ?= rv64
+ARCHS = la64
+CURR_ARCH ?= la64
 FS_MODE ?= ext4
 BLK_MODE ?= virt
 MODE ?= release
