@@ -5,7 +5,7 @@ KERNEL_ELF := target/$(TARGET)/$(MODE)/os
 KERNEL_BIN := $(KERNEL_ELF).bin
 DISASM_TMP := target/$(TARGET)/$(MODE)/asm
 BLK_MODE := virt
-FS_MODE ?= ext4
+FS_MODE ?= fat32
 ROOTFS_IMG_NAME = rootfs-rv.img
 ROOTFS_IMG_DIR := ../fs-img-dir
 CORE_NUM := 1
@@ -164,5 +164,18 @@ comp-gdb:
         -rtc base=utc \
         -S \
         -s
+
+test:
+	@qemu-system-riscv64 \
+		-machine virt \
+		-kernel $(KERNEL_RV) \
+		-m 128M \
+		-nographic \
+		-smp 1 \
+		-bios default \
+		-drive file=$(SDCARD_RV),if=none,format=raw,id=x0  \
+		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
+		-device virtio-net-device,netdev=net \
+		-netdev user,id=net 
 
 .PHONY: user
