@@ -12,7 +12,7 @@ CORE_NUM := 1
 LOG := off
 KERNEL_RV := ../kernel-rv
 KERNEL_LA := ../kernel-la
-SDCARD_RV := ../../../sdcard-rv.img
+SDCARD_RV := ../sdcard-rv.img
 SDCARD_LA := ../sdcard-la.img
 
 ifeq ($(BOARD), vf2)

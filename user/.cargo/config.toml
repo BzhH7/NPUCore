@@ -6,7 +6,7 @@ rustflags = [
     "-Clink-arg=-static",
     "-Cforce-frame-pointers=yes",
 ]
-#linker = "loongarch64-linux-gnu-gcc"
+linker = "loongarch64-linux-gnu-gcc"
 
 [target.riscv64gc-unknown-none-elf]
 rustflags = ["-Clink-args=-Tsrc/linker-rv.ld"]
