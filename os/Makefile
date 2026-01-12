@@ -1,4 +1,4 @@
-ARCHS = rv64 la64
+ARCHS = rv64
 CURR_ARCH ?= rv64
 FS_MODE ?= ext4
 BLK_MODE ?= virt
@@ -6,7 +6,7 @@ MODE ?= release
 
 .PHONY: all $(ARCHS) clean
 
-all: rv64
+all: $(ARCHS)
 
 $(ARCHS):
 	@echo "Building for ARCH=$@"
