@@ -129,27 +129,18 @@ extern "C" {
 use crate::hal::TrapContext;
 
 #[no_mangle]
+#[cfg(feature = "riscv")]
 pub fn rust_main(hart_id: usize) -> ! {
     
     unsafe {
         riscv::register::sstatus::clear_sie();
     }
 
-    // 中断向量表设置 (stvec) 必须每个核都做
     machine_init(); 
 
-    // 1. 判断是否为 BSP (原子操作 CAS)
-    // 只有第一个执行这行代码的核心会得到 is_bsp = true
     let is_bsp = !BOOT_FLAG.swap(true, Ordering::SeqCst);
 
-    // ⚠️ 注意：在锁初始化之前，尽量不要多核同时 Println，否则还是会乱。
-    // 这里我们先不打印，等 Console 初始化好后再打印。
-
     if is_bsp {
-        // ==========================
-        //       主核 (BSP) 逻辑
-        // ==========================
-        
         // 清空 BSS (必须最先做，且只能做一次)
         mem_clear();
         
@@ -192,13 +183,8 @@ pub fn rust_main(hart_id: usize) -> ! {
         task::add_initproc();
         println!("[kernel] Initproc loaded!");
 
-        // ------------------------------------------
-        //         唤醒从核 (Secondary Harts)
-        // ------------------------------------------
         let start_vaddr = _start as usize;
-        // 如果开启了分页，需要把虚拟地址转为物理地址给 SBI
-        // 假设有一个宏或函数做这个转换，或者直接用物理地址启动
-        // 这里沿用你原来的逻辑
+
         let start_paddr = start_vaddr & !0xffffffff00000000; 
 
         println!("[Boot] BSP is waking up secondary harts...");
@@ -224,14 +210,6 @@ pub fn rust_main(hart_id: usize) -> ! {
         println!("[Boot] BSP barrier released. All harts enter main loop.");
 
     } else {
-        // ==========================
-        //       从核 (AP) 逻辑
-        // ==========================
-        
-        // ⚠️ 关键修改：移除这里的 sbi::console_putchar
-        // 原因：此时 BSP 正在疯狂输出初始化日志，AP 如果插嘴，屏幕就会乱码。
-        // AP 应该保持“静默”，直到收到出发信号。
-
         while !AP_CAN_START.load(Ordering::Acquire) {
             spin_loop(); // CPU 提示，降低功耗
         }
@@ -239,10 +217,6 @@ pub fn rust_main(hart_id: usize) -> ! {
         // 此时 BSP 已经初始化完锁和全局资源，可以安全打印了
         println!("[Boot] Hart {} (AP) implies ready and running.", hart_id);
     }
-
-    // ==========================
-    //     所有核心通用逻辑
-    // ==========================
     
     unsafe { riscv::register::sstatus::set_sie(); }
 
@@ -252,6 +226,43 @@ pub fn rust_main(hart_id: usize) -> ! {
     
     panic!("Unreachable in rust_main!");
 }
+
+#[no_mangle]
+#[cfg(feature = "loongarch64")]
+pub fn rust_main() -> ! {
+    bootstrap_init();
+    mem_clear();
+    // 这一行可能有误，需要后续处理
+    #[cfg(all(feature = "block_mem"))]
+    move_to_high_address();
+    console::log_init();
+    println!("[kernel] Console initialized.");
+    mm::init();
+    println!("[kernel] Hello, world!");
+    // note that remap_test is currently NOT supported by LA64, for the whole kernel space is RW!
+    // #[cfg(feature = "riscv")]
+    // mm::remap_test();
+
+    machine_init();
+
+    //machine independent initialization
+    // use crate::drivers::block::block_device_test;
+    // block_device_test();
+    fs::directory_tree::init_fs();
+    net::config::init();
+    #[cfg(feature = "block_virt")]
+    println!("[kernel] block in virt mode!");
+    #[cfg(feature = "oom_handler")]
+    println!("[kernel] oom_handler is enabled!");
+    #[cfg(any(feature = "block_virt_pci", feature = "block_virt"))]
+    fs::flush_preload();
+    task::add_initproc();
+    // note that in run_tasks(), there is yet *another* pre_start_init(),
+    // which is used to turn on interrupts in some archs like LoongArch.
+    task::run_tasks();
+    panic!("Unreachable in rust_main!");
+}
+
 
 #[cfg(test)]
 fn test_runner(_tests: &[&dyn Fn()]) {}

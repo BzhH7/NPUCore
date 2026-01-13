@@ -2,9 +2,8 @@ use crate::hal::{console_flush, console_putchar};
 use crate::task::current_task;
 use core::fmt::{self, Write};
 use log::{self, Level, LevelFilter, Log, Metadata, Record};
-use spin::Mutex;
-use riscv::register::sstatus;
 
+// won't require lock, but unlikely to cause problem
 struct KernelOutput;
 
 impl Write for KernelOutput {
@@ -25,25 +24,10 @@ impl Write for KernelOutput {
     }
 }
 
-// 2. 使用 Mutex 包裹 KernelOutput
-// spin::Mutex 在 no_std 下就是自旋锁，遇到锁时会忙等待
-static STDOUT: Mutex<KernelOutput> = Mutex::new(KernelOutput);
-
 pub fn print(args: fmt::Arguments) {
-    // 【修复】：在获取锁之前关闭中断，防止在持有锁时被时钟中断抢占导致死锁
-    let sie = sstatus::read().sie();
-    if sie {
-        unsafe { sstatus::clear_sie(); }
-    }
-
-    STDOUT.lock().write_fmt(args).unwrap();
-
-    if sie {
-        unsafe { sstatus::set_sie(); }
-    }
+    KernelOutput.write_fmt(args).unwrap();
 }
 
-// 下面的宏定义不用动，它们会调用上面的 print 函数
 #[macro_export]
 macro_rules! print {
     ($fmt: literal $(, $($arg: tt)+)?) => {
