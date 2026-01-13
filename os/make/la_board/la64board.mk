@@ -52,6 +52,14 @@ MINITERM_START_CMD=python3 -m serial.tools.miniterm --dtr 0 --rts 0 --filter dir
 LA_ENTRY_POINT = 0x9000000090000000
 LA_LOAD_ADDR = 0x9000000090000000
 
+RUN_SCRIPT := ./run_script
+QEMU_BIOS_DIR := ../util/qemu-2k1000/gz/
+QEMU_BIOS_SRC := $(QEMU_BIOS_DIR)/u-boot-with-spl.bin
+TFTP_DIR := ../fs-img-dir
+DISK_IMG := $(TFTP_DIR)/rootfs-ubifs-ze.img
+SDCARD_LA := ../sdcard.img
+
+
 run: clean env update-usr run-inner 
 
 update-usr:user ext4
@@ -123,10 +131,27 @@ env: # switch-toolchain
 	-(rustup target list | grep "$(TARGET) (installed)") || rustup target add $(TARGET)
 	if [ "$(dpkg --list|grep "ii[[:space:]]*expect")"="" ];then true;else sudo apt install expect;fi
 
+comp:
+	DEBUG_GMAC_PHYAD=0 $(RUN_SCRIPT) \
+	qemu-system-loongarch64 \
+	-M ls2k \
+	-m 1024 \
+	-smp threads=1 \
+	-serial stdio \
+	-vnc :0 \
+	-drive if=pflash,file=$(QEMU_BIOS_SRC),format=raw \
+	-drive if=mtd,file=target/nand.dat,format=raw \
+	-hda $(DISK_IMG) \
+	-hdb $ \
+	-net nic -net user,net=192.168.1.2/24,tftp=$(TFTP_DIR) \
+	-s
+
+
 clean:
 	@cargo clean
 	-@rm ../fs-img-dir/uImage
 	-@rm ../fs-img-dir/rootfs-ubifs-ze.img
 	-@cd ../user && make clean
+	
 
 .PHONY: user update gdb new-gdb monitor .FORCE
