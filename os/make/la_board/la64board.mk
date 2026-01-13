@@ -11,7 +11,7 @@ KERNEL_ELF = target/$(TARGET)/$(MODE)/os
 KERNEL_BIN = $(KERNEL_ELF).bin
 KERNEL_UIMG = $(KERNEL_ELF).ui
 
-BOARD ?= laqemu
+BOARD ?= 2k1000
 LDBOARD = la2k1000
 
 # 大写K转小写

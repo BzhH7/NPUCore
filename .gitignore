@@ -37,3 +37,5 @@ apps/tetris/build
 
 user/LaTest
 user/RvTest
+
+*.img
