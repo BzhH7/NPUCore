@@ -1,0 +1,145 @@
+[33mcommit cf964cd9c1209aee6da7b0fd46871ab7869031b8[m[33m ([m[1;36mHEAD -> [m[1;32mcomp-la64[m[33m, [m[1;31mOSkernel/comp-la64[m[33m)[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Mon Jan 12 22:16:19 2026 +0800
+
+    适配了针对loongarch下的初赛环境
+
+[33mcommit 47b0ef80ba38eda9803353eaea10ccc785bdcc97[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Mon Jan 12 17:58:01 2026 +0800
+
+    添加了自动测试脚本
+
+[33mcommit 6384e4c0d767be5614a3bc352ac7e4a9faf458bc[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Mon Jan 12 17:53:37 2026 +0800
+
+    适配了fat32文件系统
+
+[33mcommit 868b15bbdc6b9dad3de56c4051b78858797e79d9[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Mon Jan 12 16:51:27 2026 +0800
+
+    修改了rv64.mk的参数
+
+[33mcommit e65b19b76b87445f47b24b8fcabc8b05337df145[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Mon Jan 12 16:38:45 2026 +0800
+
+    删除多余文件
+
+[33mcommit 266694ea3ac5f3a9ab5d141dc5a84d0a6fa8b75f[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Mon Jan 12 16:30:18 2026 +0800
+
+    修正Makefile
+
+[33mcommit 4348f44f9f4cbafcd6dcc85f0567394fa9fdf39d[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Mon Jan 12 16:18:36 2026 +0800
+
+    初赛提交
+
+[33mcommit 47fea560c321fbcf5a76deeefb79fec78263f1c2[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Sun Jan 11 11:47:02 2026 +0800
+
+    适配初赛环境
+
+[33mcommit 49464f26accb6132ca00bdec68c1ea50fbd58e10[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mmain[m[33m)[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Sat Jan 10 17:44:43 2026 +0800
+
+    SMP=1条件下通过sleep测例
+
+[33mcommit 73546484bc1f1cc40247b194dcf529876596b702[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Thu Jan 8 15:47:06 2026 +0800
+
+    更新 trap_from_kernel 逻辑
+
+[33mcommit 69d4bcacb766aa90af61b926195fc72a26d381e5[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Wed Jan 7 20:20:17 2026 +0800
+
+    添加了内核中断入口汇编，完善了manager中的中断处理
+
+[33mcommit b9193d88275a3d50883fd7ccb7f7a1deec603936[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Wed Jan 7 19:51:17 2026 +0800
+
+    修复了遗留的汇编问题
+
+[33mcommit 2b6cc8121a494dbff4c1286f6ba1fafb5af636c8[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Wed Jan 7 19:36:42 2026 +0800
+
+    添加了log日志输出，定位sleep测例问题点
+
+[33mcommit cc7f326dee8c59965bd4942e16a23d2017f23daa[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Sun Jan 4 08:26:20 2026 +0800
+
+    一些gdb调试的bug
+
+[33mcommit 069259a736689b677a12b388a38d572e3e07698f[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Sat Dec 27 22:41:16 2025 +0800
+
+    fix(syscall/process.rs):修复sys_wait4中断言过于严格导致的崩溃
+
+[33mcommit e5eb696e91d604d149db04f77181ba4f2cabe291[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Sat Dec 27 22:36:03 2025 +0800
+
+    Revert "fix(syscall/process.rs):修复NPUcore 在多核（SMP）环境下存在的竞争条件"
+    
+    This reverts commit 44568c907994dd6463af476542b0e2a9a840ba1c.
+
+[33mcommit 4bc7dfeb8b112f30d08ebd1673f1ad2e6da05007[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Sat Dec 27 21:53:48 2025 +0800
+
+    fix(syscall/process.rs):修复NPUcore 在多核（SMP）环境下存在的竞争条件
+
+[33mcommit a2bfe2e283f15782b5bc775daca87aa7526cc41b[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Sat Dec 27 20:39:22 2025 +0800
+
+    fix(trap/mod.rs):修复测试结束系统崩溃
+
+[33mcommit 7e0ca27610f3286e1aac16ecb879f2160ad97be8[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Sat Dec 27 20:32:46 2025 +0800
+
+    fix(task,hal):修复了卡死和崩溃
+
+[33mcommit d3360cf339223dc5edbb7f9ed5e48d809923cf43[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Sat Dec 27 17:37:11 2025 +0800
+
+    update for linux
+
+[33mcommit 399fd30fc3a3826ac837c987d11e93f6fcf82c75[m
+Author: BzhH7 <2484337545@qq.com>
+Date:   Sun Dec 14 08:43:18 2025 +0800
+
+    update per-cpu
+
+[33mcommit e25bac96ef51a85cab484819fb6eca4500b4f25e[m
+Author: BzhH <13487161+bzhh7@user.noreply.gitee.com>
+Date:   Sun Dec 14 08:35:22 2025 +0800
+
+    import blossom add per-cpu support
+
+[33mcommit cf97fd204915142e0b92ffa5a15bbbd30c88a3d9[m
+Author: BzhH <13487161+bzhh7@user.noreply.gitee.com>
+Date:   Sat Nov 29 13:54:25 2025 +0800
+
+    description
+
+[33mcommit af5c3ca15da1825f7bc35ccdf01a434c1db75785[m
+Author: Ovo <t202510699997583@eduxiji.net>
+Date:   Sat Nov 29 05:43:33 2025 +0000
+
+    Initial commit

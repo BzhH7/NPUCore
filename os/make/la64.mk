@@ -11,10 +11,24 @@ ROOTFS_IMG_DIR := ../fs-img-dir
 CORE_NUM := 1
 LOG := off
 KERNEL_LA := ../kernel-la
-SDCARD_LA := sdcard.img 
+SDCARD_LA := ../sdcard-la.img
 
 # BOARD
-BOARD ?= 2k1000
+BOARD ?= laqemu
+
+# SBI config (can be simplified later)
+SBI ?= opensbi-1.0
+ifeq ($(BOARD), laqemu)
+	ifeq ($(SBI), rustsbi)
+		BOOTLOADER := ../bootloader/$(SBI)-$(BOARD).bin
+	else ifeq ($(SBI), default)
+		BOOTLOADER := default
+	else
+		BOOTLOADER := ../bootloader/fw_payload.bin
+	endif
+else ifeq ($(BOARD), vf2)
+	BOOTLOADER := ../bootloader/rustsbi-$(BOARD).bin
+endif
 
 # Logging config
 ifndef LOG
@@ -23,18 +37,8 @@ else
 	LOG_OPTION := "log_${LOG}"
 endif
 
-KERNEL_ENTRY_PA := 0x9000000008000000
-LA_LOAD_ADDR := 0x9000000008000000
-LA_ENTRY_POINT := 0x9000000008000000
-QEMU_BIOS_DIR := ../util/tmp/qemu/2k1000
-QEMU_BIOS_SRC := $(QEMU_BIOS_DIR)/u-boot-with-spl.bin
-QEMU_BIOS_RUN := target/u-boot-run.bin
-
-
-KERNEL_UIMG := target/$(TARGET)/$(MODE)/uImage
-
-TFTP_DIR := ../fs-img-dir
-DISK_IMG := $(TFTP_DIR)/rootfs-la.img
+# KERNEL entry address
+KERNEL_ENTRY_PA := 0x9000000090000000
 
 # Binutils
 OBJDUMP := rust-objdump --arch-name=loongarch64
@@ -44,7 +48,11 @@ OBJCOPY := rust-objcopy --binary-architecture=loongarch64
 APPS := ../user/src/bin/*
 
 # FS image
-ROOTFS_IMG := ${ROOTFS_IMG_DIR}/${ROOTFS_IMG_NAME}
+ifeq ($(BOARD), vf2)
+	ROOTFS_IMG := /dev/sdc
+else
+	ROOTFS_IMG := ${ROOTFS_IMG_DIR}/${ROOTFS_IMG_NAME}
+endif
 
 # Build rules
 all: fs-img build
@@ -56,6 +64,7 @@ build: env $(KERNEL_BIN) mv
 
 env:
 	(rustup target list | grep "$(TARGET) (installed)") || rustup target add $(TARGET)
+	(rustup target list | grep "loongarch64-unknown-none (installed)") || rustup target add loongarch64-unknown-none
 	rustup component add rust-src
 	rustup component add llvm-tools-preview
 
@@ -70,62 +79,80 @@ fs-img: user
 	./buildfs.sh "$(ROOTFS_IMG)" "$(BOARD)" $(MODE) $(FS_MODE)
 
 kernel:
-	@echo "Restoring .cargo configuration..."
-	@if [ -d cargo_config ]; then \
-		rm -rf .cargo; \
-		mv cargo_config .cargo; \
-	fi
 	@echo Platform: $(BOARD)
+	@echo BLK_MODE: $(BLK_MODE)
 ifeq ($(MODE), debug)
 	@LOG=$(LOG) cargo build --features "board_$(BOARD) $(LOG_OPTION) block_$(BLK_MODE) oom_handler" --no-default-features --target loongarch64-unknown-none
 else
 	@LOG=$(LOG) cargo build --release --features "board_$(BOARD) $(LOG_OPTION) block_$(BLK_MODE) oom_handler" --no-default-features --target loongarch64-unknown-none
 endif
-	@mv .cargo cargo_config;
 
 clean:
 	@cargo clean
 	@rm -rf $(KERNEL_LA)
-	-@cd ../../user && make clean
 
-uimage: $(KERNEL_BIN)
-	../util/mkimage -A loongarch -O linux -T kernel -C none \
-		-a $(LA_LOAD_ADDR) -e $(LA_ENTRY_POINT) \
-		-n NPUcore+ -d $(KERNEL_BIN) $(KERNEL_UIMG)
-	
-	@echo "uImage generated at $(KERNEL_UIMG)"
-
-RUN_SCRIPT := ./run_script
-
-prepare-qemu: uimage
-	@echo "Preparing QEMU environment..."
-	@if [ -f $(QEMU_BIOS_SRC) ]; then \
-		cp $(QEMU_BIOS_SRC) $(QEMU_BIOS_RUN); \
-		truncate -s 16M $(QEMU_BIOS_RUN); \
-	else \
-		echo "Error: BIOS file not found at $(QEMU_BIOS_SRC)"; \
-		exit 1; \
-	fi
-	@dd if=/dev/zero bs=1M count=16 2>/dev/null | tr '\000' '\377' > target/nand.dat
-	@mkdir -p $(TFTP_DIR)
-	@cp $(KERNEL_UIMG) $(TFTP_DIR)/uImage
-	@echo "uImage copied to $(TFTP_DIR)/uImage"
-
-run: prepare-qemu
-	DEBUG_GMAC_PHYAD=0 $(RUN_SCRIPT) \
-	qemu-system-loongarch64 \
-	-M ls2k \
-	-m 1024 \
-	-smp threads=1 \
-	-serial stdio \
-	-vnc :0 \
-	-drive if=pflash,file=$(QEMU_BIOS_RUN),format=raw \
-	-drive if=mtd,file=target/nand.dat,format=raw \
-	-hda $(DISK_IMG) \
-	-net nic -net user,net=192.168.1.2/24,tftp=$(TFTP_DIR) \
-	-s
+run: build
+ifeq ($(BOARD), laqemu)
+	@qemu-system-loongarch64 \
+		-machine virt \
+		-nographic \
+		-bios $(BOOTLOADER) \
+		-device loader,file=$(KERNEL_BIN),addr=$(KERNEL_ENTRY_PA) \
+		-drive if=none,file=$(ROOTFS_IMG),format=raw,id=x0 \
+		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
+		-m 1024 \
+		-smp threads=$(CORE_NUM)
+endif
 
 monitor:
 	loongarch64-unknown-elf-gdb -ex 'file target/loongarch64-unknown-none/debug/os' -ex 'set arch loongarch64' -ex 'target remote localhost:1234'
 
-.PHONY: all build kernel fs-img user clean run monitor
+gdb:
+	@qemu-system-loongarch64 \
+		-machine virt \
+		-nographic \
+		-bios $(BOOTLOADER) \
+		-device loader,file=target/loongarch64-unknown-none/debug/os,addr=$(KERNEL_ENTRY_PA) \
+		-drive file=$(ROOTFS_IMG),if=none,format=raw,id=x0 \
+		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
+		-m 1024 \
+		-smp threads=$(CORE_NUM) -S -s | tee qemu.log
+
+runsimple:
+	@qemu-system-loongarch64 \
+		-machine virt \
+		-nographic \
+		-bios $(BOOTLOADER) \
+		-device loader,file=$(KERNEL_ELF),addr=$(KERNEL_ENTRY_PA) \
+		-drive file=$(ROOTFS_IMG),if=none,format=raw,id=x0 \
+		-m 1024 \
+		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
+		-smp threads=$(CORE_NUM)
+
+comp:
+	@qemu-system-loongarch64 \
+		-machine virt \
+		-kernel $(KERNEL_LA) \
+		-m 1024 \
+		-nographic \
+		-smp 1 \
+		-drive file=$(SDCARD_LA),if=none,format=raw,id=x0 \
+		-device virtio-blk-pci,drive=x0\
+		-no-reboot \
+		-rtc base=utc
+
+comp-gdb:
+	@qemu-system-loongarch64 \
+		-machine virt \
+		-kernel $(KERNEL_LA) \
+		-m 1024 \
+		-nographic \
+		-smp 1 \
+		-drive file=$(SDCARD_LA),if=none,format=raw,id=x0 \
+		-device virtio-blk-pci,drive=x0 \
+		-no-reboot \
+		-rtc base=utc \
+		-S \
+		-s
+
+.PHONY: all build kernel fs-img user clean run gdb comp comp-gdb

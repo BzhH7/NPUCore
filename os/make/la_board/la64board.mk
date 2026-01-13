@@ -5,7 +5,7 @@
 
 TARGET := loongarch64-unknown-none
 MODE := release
-FS_MODE := ext4
+FS_MODE := fat32
 
 KERNEL_ELF = target/$(TARGET)/$(MODE)/os
 KERNEL_BIN = $(KERNEL_ELF).bin
@@ -76,12 +76,18 @@ $(KERNEL_BIN): kernel
 	@$(READELF) -ash $(KERNEL_ELF) > target/$(TARGET)/$(MODE)/sec.txt &
 
 kernel:
+	@echo "Restoring .cargo configuration..."
+	@if [ -d cargo_config ]; then \
+		rm -rf .cargo; \
+		mv cargo_config .cargo; \
+	fi
 	@echo Platform: $(BOARD)
     ifeq ($(MODE), debug)
 		@cargo build --no-default-features --features "comp board_$(BOARD) block_$(BLOCK) $(LOG_OPTION)" --target $(TARGET)
     else
 		@cargo build --no-default-features --release --features "comp board_$(BOARD) block_$(BLOCK) $(LOG_OPTION)"  --target $(TARGET)
     endif
+		@mv .cargo cargo_config;
 
 uimage: $(KERNEL_BIN)
 	../util/mkimage -A loongarch -O linux -T kernel -C none -a $(LA_LOAD_ADDR) -e $(LA_ENTRY_POINT) -n NPUcore+ -d $(KERNEL_BIN) $(KERNEL_UIMG)
