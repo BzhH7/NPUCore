@@ -128,8 +128,10 @@ else ifeq ($(BOARD), 2k1000)
 endif
 
 env: # switch-toolchain
-	-(rustup target list | grep "$(TARGET) (installed)") || rustup target add $(TARGET)
-	if [ "$(dpkg --list|grep "ii[[:space:]]*expect")"="" ];then true;else sudo apt install expect;fi
+	(rustup target list | grep "$(TARGET) (installed)") || rustup target add $(TARGET)
+	(rustup target list | grep "loongarch64-unknown-none (installed)") || rustup target add loongarch64-unknown-none
+	rustup component add rust-src
+	rustup component add llvm-tools-preview
 
 comp:
 	DEBUG_GMAC_PHYAD=0 $(RUN_SCRIPT) \
