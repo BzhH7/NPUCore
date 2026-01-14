@@ -19,7 +19,7 @@ ifeq ($(BOARD), 2K1000)
 	BOARD = 2k1000
 endif
 
-BLOCK ?= mem
+BLOCK ?= sata
 
 # Binutils
 OBJCOPY := loongarch64-linux-gnu-objcopy
