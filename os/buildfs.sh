@@ -113,6 +113,7 @@
 
 SUDO=$(if [ $(whoami) = "root" ]; then echo -n ""; else echo -n "sudo"; fi)
 U_FS_DIR="../fs-img-dir"
+U_FAT32_DIR="../fs-img-dir"
 U_FS="$1"
 BLK_SZ="4096"
 TARGET=riscv64gc-unknown-none-elf
@@ -219,6 +220,8 @@ if [ "$2" = "visionfive2" ]; then
     $SUDO cp -r ../user/target/riscv64gc-unknown-none-elf/release/initproc ${U_FS_DIR}/fs/
     $SUDO cp -r ../user/RvTest/* ${U_FS_DIR}/fs/
 fi
+
+try_copy ../user/busybox_lua_testsuites/${ARCH} ${U_FAT32_DIR}/fs/
 
 $SUDO umount ${U_FS_DIR}/fs
 echo "DONE"

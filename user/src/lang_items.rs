@@ -4,18 +4,34 @@ use core::panic::PanicInfo;
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     if let Some(location) = info.location() {
-        println!(
-            "[kernel] panicked at '{}', {}:{}:{}",
-            info.message(),
-            location.file(),
-            location.line(),
-            location.column()
-        );
+        match info.message() {
+            Some(args) => {
+                println!(
+                    "[kernel] panicked at '{}', {}:{}:{}",
+                    args,
+                    location.file(),
+                    location.line(),
+                    location.column()
+                );
+            }
+            None => {
+                println!(
+                    "[kernel] panicked at '(no message)', {}:{}:{}",
+                    location.file(),
+                    location.line(),
+                    location.column()
+                );
+            }
+        }
     } else {
-        println!(
-            "[kernel] panicked at '{}'",
-            info.message()
-        );
+        match info.message() {
+            Some(args) => {
+                println!("[kernel] panicked at '{}'", args);
+            }
+            None => {
+                println!("[kernel] panicked at '(no message)'");
+            }
+        }
     }
 
     exit(-1)

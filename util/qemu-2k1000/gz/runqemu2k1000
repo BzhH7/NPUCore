@@ -8,7 +8,7 @@ TFTP_DIR="$SCRIPTPATH"/../../../fs-img-dir
 OS="$SCRIPTPATH"/nand.dat
 [ -e "$OS" ] || dd if=/dev/zero bs=1M count=$(((256*(2048+64)/2048)))|tr '\000' '\377' > "$OS"
 FS_IMG="$SCRIPTPATH"/rootfs-ubifs-ze.img
-SDCARD_LA="$SCRIPTPATH"/../../../sdcard.img
+SDCARD_LA="$SCRIPTPATH"/../../../sdcard-la.img
 
 DEBUG_GMAC_PHYAD=0 "$QEMU"\
          -M ls2k -drive if=pflash,file=$BIOS,format=raw \
@@ -20,6 +20,6 @@ DEBUG_GMAC_PHYAD=0 "$QEMU"\
          -net nic -net user,net=10.0.3.0/24\
          -vnc 0.0.0.0:0 \
          -smp threads=1 \
-         -hda $FS_IMG \
-         -hdb $SDCARD_LA \
+         -hda $SDCARD_LA \
+         -hdb $FS_IMG \
          -s $@ 2>&1 \
