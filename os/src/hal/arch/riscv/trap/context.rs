@@ -87,7 +87,6 @@ pub struct TrapContext {
     pub trap_handler: usize,
     /// The current sp to be recovered on next entry into kernel space.
     pub kernel_sp: usize,
-    pub kernel_tp: usize,
 }
 
 impl TrapContext {
@@ -114,7 +113,6 @@ impl TrapContext {
             kernel_satp,
             trap_handler,
             kernel_sp,
-            kernel_tp: 0,
         };
         cx.gp.pc = entry;
         cx.set_sp(sp);

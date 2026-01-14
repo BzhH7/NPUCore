@@ -131,7 +131,7 @@ use crate::{
     timer::{ITimerVal, TimeSpec, Times},
 };
 
-pub fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {    
+pub fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
     let mut show_info = false;
     if option_env!("LOG").is_some()
         && ![

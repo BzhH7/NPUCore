@@ -14,7 +14,7 @@ KERNEL_LA := ../kernel-la
 SDCARD_LA := ../sdcard-la.img
 
 # BOARD
-BOARD ?= laqemu
+BOARD ?= 2k1000
 
 # SBI config (can be simplified later)
 SBI ?= opensbi-1.0

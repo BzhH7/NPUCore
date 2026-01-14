@@ -5,9 +5,6 @@ use crate::hal::TrapContext;
 use alloc::sync::Arc;
 use lazy_static::*;
 use spin::Mutex;
-use core::arch::asm;
-use crate::config::MAX_CPU_NUM; // 引入CPU数量配置
-use alloc::vec::Vec;
 
 /// 处理器对象
 pub struct Processor {
@@ -49,154 +46,70 @@ impl Processor {
 lazy_static! {
     /// 全局的处理器对象
     /// 使用 Mutex 包装以确保多线程安全
-    // pub static ref PROCESSOR: Mutex<Processor> = Mutex::new(Processor::new());
-    pub static ref PROCESSORS: Vec<Mutex<Processor>> = {
-        let mut v = Vec::new();
-        for _ in 0..MAX_CPU_NUM {
-            v.push(Mutex::new(Processor::new()));
-        }
-        v
-    };
+    pub static ref PROCESSOR: Mutex<Processor> = Mutex::new(Processor::new());
 }
 
 /// 运行任务调度
-// 引用 sstatus
-use riscv::register::sstatus;
-
+/// # 作用
+/// 运行任务调度器，不断从任务队列中取出任务并运行
 pub fn run_tasks() {
     loop {
-        let cpu_id = current_cpu_id();
-        
-        // 1. 【关键】获取锁之前必须关闭中断，防止中断处理函数重入导致死锁
-        unsafe { sstatus::clear_sie(); }
-
-        let mut processor = PROCESSORS[cpu_id].lock();
-        
+        // 获取全局处理器对象
+        let mut processor = PROCESSOR.lock();
+        // 尝试从全局变量 TASK_MANAGER 中取出一个任务
         if let Some(task) = fetch_task() {
+            // 获取当前空闲任务的上下文指针
             let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
+            // 独占地访问即将运行的任务的 TCB
             let next_task_cx_ptr = {
                 let mut task_inner = task.acquire_inner_lock();
-                task_inner.get_trap_cx().kernel_tp = cpu_id;
                 task_inner.task_status = TaskStatus::Running;
                 &task_inner.task_cx as *const TaskContext
             };
+            // 设置当前正在运行的任务
             processor.current = Some(task);
+            // 手动释放处理器
             drop(processor);
-            
-            // 2. 切换任务
-            // __switch 恢复的 sstatus 通常会包含开启中断（如果任务是在开启中断时被挂起的）
             unsafe {
+                // 调用__switch 函数(汇编)切换任务
                 __switch(idle_task_cx_ptr, next_task_cx_ptr);
             }
         } else {
-            // 没有任务，释放锁
+            // 如果没有任务
+            // 释放处理器的锁
             drop(processor);
-
-            // 关键调试日志：确认是否进入 Idle
-            log::info!("[run_tasks] No tasks. Enabling interrupts and entering wfi...");
-
-            // ==== DEBUG START: 检查中断寄存器 ====
-            let sstatus_val = unsafe { riscv::register::sstatus::read() };
-            let sie_val = unsafe { riscv::register::sie::read() };
-            let sip_val = unsafe { riscv::register::sip::read() };
-            let time_val = unsafe { riscv::register::time::read() };
-            // sstatus.sie() 是全局中断使能位 (Bit 1)
-            // sie.stie() 是时钟中断使能位 (Bit 5)
-            // sip.stip() 是时钟中断等待位 (Bit 5)
-            log::info!("[Idle Debug] sstatus: {:?}, sie: {:?}, sip: {:?}, time: {}", 
-                sstatus_val, sie_val, sip_val, time_val);
-            // ==== DEBUG END ====
-            // 3. 【关键】Idle 状态处理
-            // 必须开启中断才能被唤醒（响应时钟中断或其他），
-            // 使用 wfi 等待以降低功耗。
-            unsafe {
-                sstatus::set_sie(); 
-                // riscv::asm::wfi(); 
-            }
-            log::info!("[run_tasks] Woke up from wfi!");
+            // 没有就绪的任务，尝试唤醒一些任务
+            do_wake_expired();
         }
     }
 }
 
+/// 取出当前正在运行的任务
 pub fn take_current_task() -> Option<Arc<TaskControlBlock>> {
-    let cpu_id = current_cpu_id();
-    let sstatus = unsafe { riscv::register::sstatus::read() };
-    let was_enabled = sstatus.sie();
-    unsafe { riscv::register::sstatus::clear_sie(); }
-    let task = PROCESSORS[cpu_id].lock().take_current();
-    if was_enabled {
-        unsafe { riscv::register::sstatus::set_sie(); }
-    }
-    task
+    PROCESSOR.lock().take_current()
 }
 
+/// 获取当前正在运行的任务
 pub fn current_task() -> Option<Arc<TaskControlBlock>> {
-    let cpu_id = current_cpu_id();
-    // 1. 获取当前 sstatus 状态
-    let sstatus = unsafe { riscv::register::sstatus::read() };
-    let was_enabled = sstatus.sie();
-    // 2. 关中断以获取锁
-    unsafe { riscv::register::sstatus::clear_sie(); }
-    let task = PROCESSORS[cpu_id].lock().current();
-    // 3. 仅在进入前是开启状态时，才恢复中断
-    if was_enabled {
-        unsafe { riscv::register::sstatus::set_sie(); }
-    }
-    // 如果之前是关闭的（如在 trap_handler 中），则保持关闭
-    task
+    PROCESSOR.lock().current()
 }
 
 /// 获取当前正在运行的任务的用户态页表令牌
 pub fn current_user_token() -> usize {
-    // 【关键修复】防止 Idle 时 Panic
-    match current_task() {
-        Some(task) => task.get_user_token(),
-        None => {
-            // 如果是 Idle 状态被中断（如时钟中断），此时没有用户页表。
-            // 返回 0 可能意味着使用内核页表（取决于你的 MMU 逻辑），或者应该在调用处避免调用此函数。
-            // 为了防止 Panic，我们这里返回 0，并在日志里报个警（可选）
-            0 
-        }
-    }
+    current_task().unwrap().get_user_token()
 }
 
 /// 获取当前正在运行的任务的陷阱上下文
 pub fn current_trap_cx() -> &'static mut TrapContext {
-    // 【关键修复】防止 Idle 时 Panic
-    match current_task() {
-        Some(task) => task.acquire_inner_lock().get_trap_cx(),
-        None => {
-            panic!("Trap Context not found! (Running Idle?)");
-        }
-    }
+    current_task().unwrap().acquire_inner_lock().get_trap_cx()
 }
 
+/// 切换到空闲任务上下文
 pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
-    let cpu_id = current_cpu_id();
-    
-    // 【关键修复】关中断防止死锁
-    unsafe { sstatus::clear_sie(); }
-    // log::info!("[schedule] Getting idle_ta   sk_cx_ptr...");
-    let idle_task_cx_ptr = PROCESSORS[cpu_id].lock().get_idle_task_cx_ptr();
-    // log::info!("[schedule] Switching to idle...");
-    // 切换回 idle 循环
+    // 获取空闲任务的上下文指针
+    let idle_task_cx_ptr = PROCESSOR.lock().get_idle_task_cx_ptr();
     unsafe {
+        // 调用__switch 函数(汇编)切换任务
         __switch(switched_task_cx_ptr, idle_task_cx_ptr);
-        // 回来后，说明任务又被调度了，恢复中断（可选，通常由 sstatus 自动恢复）
-        // sstatus::set_sie(); 
     }
-    // log::info!("[schedule] Back from idle (Resumed)!");
-}
-
-pub fn current_cpu_id() -> usize {
-    let cpu_id: usize;
-    #[cfg(target_arch = "riscv64")]
-    unsafe {
-        asm!("mv {}, tp", out(reg) cpu_id);
-    }
-    #[cfg(not(target_arch = "riscv64"))]
-    {
-        cpu_id = 0;
-    }
-    cpu_id
 }

@@ -108,127 +108,7 @@ fn move_to_high_address() {
     }
 }
 
-use core::sync::atomic::{AtomicBool, Ordering};
-use core::hint::spin_loop;
-
-#[link_section = ".data"]
-static AP_CAN_START: AtomicBool = AtomicBool::new(false);
-#[link_section = ".data"] 
-static BOOT_FLAG: AtomicBool = AtomicBool::new(false);
-
-#[cfg(feature = "riscv")]
-// 引入 sbi 模块
-use crate::hal::arch::riscv::sbi;
-use crate::config::MAX_CPU_NUM;
-
-// 声明汇编入口 _start，我们需要它的地址
-extern "C" {
-    fn _start();
-}
-
-use crate::hal::TrapContext;
-
 #[no_mangle]
-#[cfg(feature = "riscv")]
-pub fn rust_main(hart_id: usize) -> ! {
-    
-    unsafe {
-        riscv::register::sstatus::clear_sie();
-    }
-
-    machine_init(); 
-
-    let is_bsp = !BOOT_FLAG.swap(true, Ordering::SeqCst);
-
-    if is_bsp {
-        // 清空 BSS (必须最先做，且只能做一次)
-        mem_clear();
-        
-        // 初始化串口和 Console (这里面应该包含锁的初始化)
-        console::log_init(); 
-        
-        // 此时 Println 应该是安全的了
-        println!("[kernel] Console initialized by BSP.");
-        println!("[Boot] Hart {} is BSP, starting initialization...", hart_id);
-
-        bootstrap_init();
-
-        #[cfg(all(feature = "block_mem"))]
-        move_to_high_address();
-
-        mm::init(); // 初始化堆
-        println!("[kernel] Heap initialized.");
-
-        // 初始化其他子系统...
-        fs::directory_tree::init_fs();
-        
-        println!("[Debug] Calling net::config::init()...");
-        net::config::init();
-        println!("[Debug] net::config::init() done.");
-
-        #[cfg(feature = "block_virt")]
-        println!("[kernel] block in virt mode!");
-        
-        #[cfg(feature = "oom_handler")]
-        println!("[kernel] oom_handler is enabled!");
-
-        #[cfg(any(feature = "block_virt_pci", feature = "block_virt"))]
-        {
-            println!("[Debug] Calling fs::flush_preload()..."); 
-            fs::flush_preload();
-            println!("[Debug] fs::flush_preload() done.");
-        }
-
-        println!("[kernel] Loading initproc...");
-        task::add_initproc();
-        println!("[kernel] Initproc loaded!");
-
-        let start_vaddr = _start as usize;
-
-        let start_paddr = start_vaddr & !0xffffffff00000000; 
-
-        println!("[Boot] BSP is waking up secondary harts...");
-
-        for i in 0..MAX_CPU_NUM {
-            if i == hart_id { continue; } // 跳过自己
-
-            #[cfg(feature = "riscv")]
-            {
-                // 唤醒目标核
-                let ret = sbi::hart_start(i, start_paddr, 0);
-                if ret == 0 {
-                    println!("[Boot] Hart {} started command sent.", i);
-                } else {
-                    println!("[Boot] Failed to start Hart {} (error: {}).", i, ret);
-                }
-            }
-        }
-
-        // 通知从核可以继续执行了
-        // Release 保证之前的内存写入（如页表、内核栈初始化）对 Acquire 的从核可见
-        AP_CAN_START.store(true, Ordering::Release);
-        println!("[Boot] BSP barrier released. All harts enter main loop.");
-
-    } else {
-        while !AP_CAN_START.load(Ordering::Acquire) {
-            spin_loop(); // CPU 提示，降低功耗
-        }
-        
-        // 此时 BSP 已经初始化完锁和全局资源，可以安全打印了
-        println!("[Boot] Hart {} (AP) implies ready and running.", hart_id);
-    }
-    
-    unsafe { riscv::register::sstatus::set_sie(); }
-
-    // 进入调度循环
-    println!("[kernel] Hart {} entering task loop...", hart_id);
-    task::run_tasks();
-    
-    panic!("Unreachable in rust_main!");
-}
-
-#[no_mangle]
-#[cfg(feature = "loongarch64")]
 pub fn rust_main() -> ! {
     bootstrap_init();
     mem_clear();
@@ -262,7 +142,6 @@ pub fn rust_main() -> ! {
     task::run_tasks();
     panic!("Unreachable in rust_main!");
 }
-
 
 #[cfg(test)]
 fn test_runner(_tests: &[&dyn Fn()]) {}

@@ -1,4 +1,4 @@
-use super::manager::TASK_MANAGERS;
+use super::manager::TASK_MANAGER;
 use super::pid::RecycleAllocator;
 use super::signal::*;
 use super::threads::Futex;
@@ -24,7 +24,6 @@ use alloc::vec::Vec;
 use core::fmt::{self, Debug, Formatter};
 use log::trace;
 use spin::{Mutex, MutexGuard};
-use crate::task::processor::current_cpu_id;
 
 #[derive(Clone)]
 /// 任务的文件系统状态
@@ -462,7 +461,7 @@ impl TaskControlBlock {
             memory_set.create_elf_tables(self.ustack_bottom_va(), argv_vec, envp_vec, &elf_info);
         log::trace!("[load_elf] user sp after pushing parameters: {:X}", user_sp);
         // 初始化陷阱上下文
-        let mut trap_cx = TrapContext::app_init_context(
+        let trap_cx = TrapContext::app_init_context(
             if let Some(interp_entry) = elf_info.interp_entry {
                 interp_entry
             } else {
@@ -477,10 +476,6 @@ impl TaskControlBlock {
             // 陷阱处理函数地址
             trap_handler as usize,
         );
-
-        // 【关键修复】exec 不会经过调度器，必须手动将 kernel_tp 设置为当前 CPU ID
-        trap_cx.kernel_tp = current_cpu_id();
-
         // **** 保持当前PCB锁
         let mut inner = self.acquire_inner_lock();
         // 更新陷阱上下文的物理页号
@@ -518,17 +513,14 @@ impl TaskControlBlock {
         self.futex.lock().clear();
         // 检查当前任务是否是多线程任务
         if self.tid_allocator.lock().get_allocated() > 1 {
-            // 遍历所有 CPU 的管理器进行清理
-            for manager_mutex in TASK_MANAGERS.iter() {
-                let mut manager = manager_mutex.lock();
-                // 销毁所有其他同一线程组的任务
-                manager
-                    .ready_queue
-                    .retain(|task| (*task).tgid != (*self).tgid);
-                manager
-                    .interruptible_queue
-                    .retain(|task| (*task).tgid != (*self).tgid);
-            }
+            let mut manager = TASK_MANAGER.lock();
+            // 销毁所有其他同一线程组的任务
+            manager
+                .ready_queue
+                .retain(|task| (*task).tgid != (*self).tgid);
+            manager
+                .interruptible_queue
+                .retain(|task| (*task).tgid != (*self).tgid);
         };
         Ok(())
         // **** 释放当前PCB锁

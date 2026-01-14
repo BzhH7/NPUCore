@@ -75,8 +75,6 @@ pub const BUFFER_CACHE_NUM: usize = 256 * 1024 * 1024 / 2048 * 4 / 2048;
 
 pub static mut CLOCK_FREQ: usize = 0;
 
-pub const MAX_CPU_NUM: usize = 4;
-
 use core::arch::asm;
 
 #[macro_export]
