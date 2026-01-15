@@ -8,10 +8,11 @@ mod task;
 pub mod threads;
 
 use crate::hal::__switch;
-use crate::hal::disable_interrupts;
+ use crate::hal::disable_interrupts;
 use crate::{
     fs::{OpenFlags, ROOT_FD},
     mm::translated_refmut,
+    utils::InterruptGuard,
 };
 use alloc::{collections::VecDeque, sync::Arc};
 pub use context::TaskContext;
@@ -47,57 +48,37 @@ pub fn try_yield() {
 }
 
 pub fn suspend_current_and_run_next() {
-    // ==== 关键修复：关中断 ====
-    disable_interrupts();
+    let _guard = InterruptGuard::new();
 
-    // 尝试获取当前任务，使用 if let 处理 None 的情况
     if let Some(task) = take_current_task() {
-        // ---- hold current PCB lock
         let mut task_inner = task.acquire_inner_lock();
         let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
-        // Change status to Ready
         task_inner.task_status = TaskStatus::Ready;
         drop(task_inner);
-        // ---- release current PCB lock
 
-        // push back to ready queue.
         add_task(task);
-        // jump to scheduling cycle
         schedule(task_cx_ptr);
-    } else {
-        // 如果没有任务（例如 Idle 被中断），这里的处理略有不同，
-        // 但通常 trap_return 会处理。如果走到这里，最好也恢复中断（如果需要）
-        // 不过 schedule 内部会处理 idle 切换
     }
 }
 
 pub fn block_current_and_run_next() {
-    // ==== 关键修复：关中断 ====
-    // 防止在持有 TASK_MANAGERS 锁或 TCB 锁时被 Timer 中断打断导致死锁
     log::info!("[block] Enter. Disabling interrupts...");
-    disable_interrupts();
+    let _guard = InterruptGuard::new();
     log::info!("[block] Interrupts disabled.");
-    // There must be an application running.
+    
     let task = take_current_task().unwrap();
     log::info!("[block] Current task taken. Pid: {}", task.pid.0);
-    // ---- hold current PCB lock
+    
     let mut task_inner = task.acquire_inner_lock();
     let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
-    // Change status to Interruptible
     task_inner.task_status = TaskStatus::Interruptible;
     drop(task_inner);
-    // ---- release current PCB lock
     log::info!("[block] Task status set to Interruptible.");
 
-    // push to interruptible queue of scheduler
     log::info!("[block] Calling sleep_interruptible...");
-    // ---- release current PCB lock
-
-    // push to interruptible queue of scheduler, so that it won't be scheduled.
     sleep_interruptible(task);
     log::info!("[block] sleep_interruptible returned. Calling schedule...");
 
-    // jump to scheduling cycle
     schedule(task_cx_ptr);
     log::info!("[block] schedule returned (Resumed).");
 }
