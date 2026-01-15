@@ -39,5 +39,6 @@ pub use riscv::{
         trap_return, UserContext,
     },
     disable_interrupts, restore_interrupts, boot_entry_paddr,
+    ap_init, ap_finish_init,
     KernelPageTableImpl, MachineContext, PageTableImpl, TrapImpl,
 };

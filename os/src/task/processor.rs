@@ -179,14 +179,17 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
 }
 
 pub fn current_cpu_id() -> usize {
-    let cpu_id: usize;
     #[cfg(target_arch = "riscv64")]
-    unsafe {
-        asm!("mv {}, tp", out(reg) cpu_id);
-    }
-    #[cfg(not(target_arch = "riscv64"))]
     {
-        cpu_id = 0;
+        let cpu_id: usize;
+        unsafe {
+            asm!("mv {}, tp", out(reg) cpu_id);
+        }
+        cpu_id
     }
-    cpu_id
+    #[cfg(target_arch = "loongarch64")]
+    {
+        use crate::hal::arch::loongarch64::register::CPUId;
+        CPUId::read().get_core_id()
+    }
 }

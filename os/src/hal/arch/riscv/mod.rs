@@ -14,8 +14,23 @@ pub mod rv_board;
 #[path = "../../platform/riscv/visionfive2.rs"]
 pub mod rv_board;
 
+/// BSP (Bootstrap Processor) 初始化
+/// 设置陷入向量并启用时钟中断
 pub fn machine_init() {
     trap::init();
+    trap::enable_timer_interrupt();
+    set_next_trigger();
+}
+
+/// AP (Application Processor) 初始化
+/// 只设置陷入向量，不启用时钟中断（由 AP 在准备好后自行启用）
+pub fn ap_init() {
+    trap::init();
+}
+
+/// AP 完成等待后的最终初始化
+/// 启用时钟中断
+pub fn ap_finish_init() {
     trap::enable_timer_interrupt();
     set_next_trigger();
 }

@@ -6,8 +6,7 @@ fn panic(info: &PanicInfo) -> ! {
     if let Some(location) = info.location() {
         println!(
             "[kernel] panicked at '{}', {}:{}:{}",
-            // 修复：直接在 println! 内部处理默认消息，避免临时变量被过早释放
-            info.message().unwrap_or(&core::format_args!("no message")),
+            info.message(),
             location.file(),
             location.line(),
             location.column()
@@ -15,7 +14,7 @@ fn panic(info: &PanicInfo) -> ! {
     } else {
         println!(
             "[kernel] panicked at '{}'",
-            info.message().unwrap_or(&core::format_args!("no message"))
+            info.message()
         );
     }
     shutdown()
