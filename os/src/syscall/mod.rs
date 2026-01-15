@@ -1,3 +1,13 @@
+//! System call handling
+//!
+//! This module implements all Linux system calls supported by the kernel:
+//! - File system operations (open, read, write, etc.)
+//! - Process management (fork, exec, wait, etc.)
+//! - Memory management (mmap, munmap, brk, etc.)
+//! - Network operations (socket, bind, connect, etc.)
+//! - Signal handling
+//! - Timer and clock operations
+
 #[macro_use]
 mod syscall_macro;
 
@@ -14,6 +24,10 @@ use net::*;
 pub use process::CloneFlags;
 use process::*;
 use syscall_id::*;
+
+/// Get system call name by ID
+///
+/// Returns a human-readable name for debugging and logging
 pub fn syscall_name(id: usize) -> &'static str {
     match id {
         SYSCALL_DUP => "dup",
