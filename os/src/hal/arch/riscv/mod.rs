@@ -32,6 +32,10 @@ pub type ExceptionImpl = riscv::register::scause::Exception;
 
 pub fn bootstrap_init() {}
 
+pub fn boot_entry_paddr(entry_vaddr: usize) -> usize {
+    entry_vaddr & !0xffffffff00000000
+}
+
 pub fn disable_interrupts() -> bool {
     let sie = riscv::register::sstatus::read().sie();
     if sie {

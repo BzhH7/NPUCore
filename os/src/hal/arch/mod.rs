@@ -38,6 +38,6 @@ pub use riscv::{
         context::TrapContext, get_bad_addr, get_bad_instruction, get_exception_cause, trap_handler,
         trap_return, UserContext,
     },
-    disable_interrupts, restore_interrupts,
+    disable_interrupts, restore_interrupts, boot_entry_paddr,
     KernelPageTableImpl, MachineContext, PageTableImpl, TrapImpl,
 };

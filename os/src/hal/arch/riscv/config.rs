@@ -48,6 +48,9 @@ pub const BUFFER_CACHE_NUM: usize = 128;
 // dummy
 pub const MEMORY_HIGH_BASE: usize = 0x0000_0000_0000_000;
 
+/// Memory disk size for block_mem feature (128MB for RISC-V)
+pub const MEM_DISK_SIZE: usize = 0x1000_0000;
+
 pub use crate::hal::arch::riscv::rv_board::{CLOCK_FREQ, MMIO};
 
 pub const MAX_CPU_NUM: usize = 1;

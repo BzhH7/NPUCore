@@ -1,43 +1,39 @@
-use crate::hal::{console_flush, console_putchar};
+use crate::hal::{console_flush, console_putchar, disable_interrupts, restore_interrupts};
 use crate::task::current_task;
 use core::fmt::{self, Write};
 use log::{self, Level, LevelFilter, Log, Metadata, Record};
 use spin::Mutex;
-#[cfg(feature = "riscv")]
-use riscv::register::sstatus;
-#[cfg(feature = "loongarch64")]
-use crate::hal::arch::loongarch64::CrMd;
 
+/// Kernel output writer for console
 struct KernelOutput;
 
 impl Write for KernelOutput {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        let mut i = 0;
+        const FLUSH_THRESHOLD: usize = 4;
+        let mut count = 0;
         for c in s.chars() {
             console_putchar(c as usize);
-            i += 1;
-            if i >= 4 {
+            count += 1;
+            if count >= FLUSH_THRESHOLD {
                 console_flush();
-                i = 0;
+                count = 0;
             }
         }
-        if i != 0 {
+        if count != 0 {
             console_flush();
         }
         Ok(())
     }
 }
 
-// 2. 使用 Mutex 包裹 KernelOutput
-// spin::Mutex 在 no_std 下就是自旋锁，遇到锁时会忙等待
+/// Global stdout with spinlock protection
 static STDOUT: Mutex<KernelOutput> = Mutex::new(KernelOutput);
 
+/// Print formatted output to console with interrupt protection
 pub fn print(args: fmt::Arguments) {
-    // 【修复】：在获取锁之前关闭中断，防止在持有锁时被时钟中断抢占导致死锁
+    // Disable interrupts before acquiring lock to prevent deadlock from timer interrupt
     let interrupts_were_enabled = disable_interrupts();
-
     STDOUT.lock().write_fmt(args).unwrap();
-
     restore_interrupts(interrupts_were_enabled);
 }
 
@@ -100,44 +96,3 @@ fn level_to_color_code(level: Level) -> u8 {
         Level::Trace => 90, // BrightBlack
     }
 }
-
-#[cfg(feature = "riscv")]
-fn disable_interrupts() -> bool {
-    let sie = sstatus::read().sie();
-    if sie {
-        unsafe { sstatus::clear_sie(); }
-    }
-    sie
-}
-
-#[cfg(feature = "riscv")]
-fn restore_interrupts(was_enabled: bool) {
-    if was_enabled {
-        unsafe { sstatus::set_sie(); }
-    }
-}
-
-#[cfg(feature = "loongarch64")]
-fn disable_interrupts() -> bool {
-    let mut crmd = CrMd::read();
-    let was_enabled = crmd.is_interrupt_enabled();
-    if was_enabled {
-        crmd.set_ie(false).write();
-    }
-    was_enabled
-}
-
-#[cfg(feature = "loongarch64")]
-fn restore_interrupts(was_enabled: bool) {
-    if was_enabled {
-        CrMd::read().set_ie(true).write();
-    }
-}
-
-#[cfg(not(any(feature = "riscv", feature = "loongarch64")))]
-fn disable_interrupts() -> bool {
-    false
-}
-
-#[cfg(not(any(feature = "riscv", feature = "loongarch64")))]
-fn restore_interrupts(_was_enabled: bool) {}

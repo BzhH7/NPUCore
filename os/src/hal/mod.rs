@@ -15,5 +15,7 @@ pub use arch::{
     UserContext,
 };
 pub use arch::{disable_interrupts, restore_interrupts};
+#[cfg(feature = "riscv")]
+pub use arch::boot_entry_paddr;
 pub use arch::{BLOCK_SZ, BUFFER_CACHE_NUM, KERNEL_HEAP_SIZE, MEMORY_END};
 pub use arch::{MMIO, TICKS_PER_SEC};
