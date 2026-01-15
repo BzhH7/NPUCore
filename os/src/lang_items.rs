@@ -20,25 +20,6 @@ fn panic(info: &PanicInfo) -> ! {
         println!("(panic message)");
     }
 
-    let msg_str = match msg.as_str() {
-        Some(s) => s,
-        None => "(no message)",
-    };
-
-    if let Some(location) = info.location() {
-        println!(
-            "[kernel] panicked at {}:{}:{}: {}",
-            location.file(),
-            location.line(),
-            location.column(),
-            msg_str
-        );
-    } else {
-        println!(
-            "[kernel] panicked: {}",
-            msg_str
-        );
-    }
     shutdown()
 }
 
