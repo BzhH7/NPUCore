@@ -1,3 +1,11 @@
+//! ELF (Executable and Linkable Format) parsing
+//!
+//! This module handles:
+//! - ELF file parsing and loading
+//! - Program header processing
+//! - Auxiliary vector construction
+//! - Dynamic linker support
+
 /*
     此文件用于解析ELF文件
     内容与RISCV版本相同，无需修改
@@ -10,43 +18,80 @@ use crate::{
     syscall::errno::*,
 };
 
+/// Auxiliary vector types
+///
+/// Used to pass information from kernel to user program at startup
 #[derive(Clone, Copy)]
 #[allow(non_camel_case_types, unused)]
 #[repr(usize)]
 pub enum AuxvType {
+    /// End of vector
     NULL = 0,
+    /// Entry to ignore
     IGNORE = 1,
+    /// File descriptor of program
     EXECFD = 2,
+    /// Program headers for program
     PHDR = 3,
+    /// Size of program header entry
     PHENT = 4,
+    /// Number of program headers
     PHNUM = 5,
+    /// System page size
     PAGESZ = 6,
+    /// Base address of interpreter
     BASE = 7,
+    /// Flags
     FLAGS = 8,
+    /// Entry point of program
     ENTRY = 9,
+    /// Program is not ELF
     NOTELF = 10,
+    /// Real user ID
     UID = 11,
+    /// Effective user ID
     EUID = 12,
+    /// Real group ID
     GID = 13,
+    /// Effective group ID
     EGID = 14,
+    /// Platform string
     PLATFORM = 15,
+    /// Hardware capabilities
     HWCAP = 16,
+    /// Clock tick
     CLKTCK = 17,
+    /// FPU control word
     FPUCW = 18,
+    /// Data cache block size
     DCACHEBSIZE = 19,
+    /// Instruction cache block size
     ICACHEBSIZE = 20,
+    /// Unified cache block size
     UCACHEBSIZE = 21,
+    /// Ignore PowerPC entry
     IGNOREPPC = 22,
+    /// Secure mode boolean
     SECURE = 23,
+    /// Base platform string
     BASE_PLATFORM = 24,
+    /// Random bytes address
     RANDOM = 25,
+    /// Extended hardware capabilities
     HWCAP2 = 26,
+    /// Filename of program
     EXECFN = 31,
+    /// Sysinfo address
     SYSINFO = 32,
+    /// Sysinfo EHDR address
     SYSINFO_EHDR = 33,
+    /// L1 instruction cache shape
     L1I_CACHESHAPE = 34,
+    /// L1 data cache shape
     L1D_CACHESHAPE = 35,
+    /// L2 cache shape
     L2_CACHESHAPE = 36,
+    /// L3 cache shape
     L3_CACHESHAPE = 37,
     L1I_CACHESIZE = 40,
     L1I_CACHEGEOMETRY = 41,

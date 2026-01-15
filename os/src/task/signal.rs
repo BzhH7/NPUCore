@@ -1,3 +1,11 @@
+//! Signal handling for tasks
+//!
+//! This module implements POSIX-style signal handling including:
+//! - Signal types and masks
+//! - Signal delivery and handling
+//! - Signal frame management
+//! - Default signal actions
+
 use crate::hal::{
     get_bad_addr, get_bad_instruction, get_exception_cause, MachineContext, UserContext,
 };
@@ -22,7 +30,9 @@ use crate::timer::TimeSpec;
 use super::current_task;
 
 bitflags! {
-    /// Signals 枚举
+    /// Signal types
+    ///
+    /// POSIX-compatible signal definitions with standard meanings
     pub struct Signals: signal_type!(){
         /// Hangup.
         const	SIGHUP		= 1 << ( 0);

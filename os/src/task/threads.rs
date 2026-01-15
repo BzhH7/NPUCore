@@ -1,3 +1,10 @@
+//! Thread synchronization primitives
+//!
+//! This module implements:
+//! - Futex (Fast Userspace Mutex) operations
+//! - Wait queue management for blocking threads
+//! - Timeout-based waiting
+
 /*
     此文件内容用于
     内容与RISCV版本相同，无需修改
@@ -15,79 +22,79 @@ use super::{
 #[allow(unused)]
 #[derive(Debug, Eq, PartialEq, FromPrimitive)]
 #[repr(u32)]
-/// 定义了Futex支持的操作类型
+/// Futex operation commands
+///
+/// Defines the types of operations supported by the futex system call
 pub enum FutexCmd {
-    /// This  operation  tests  that  the value at the futex
-    /// word pointed to by the address uaddr still  contains
-    /// the expected value val, and if so, then sleeps wait‐
-    /// ing for a FUTEX_WAKE operation on  the  futex  word.
-    /// The load of the value of the futex word is an atomic
-    /// memory access (i.e., using atomic  machine  instruc‐
-    /// tions  of  the respective architecture).  This load,
-    /// the comparison with the expected value, and starting
-    /// to  sleep  are  performed atomically and totally or‐
-    /// dered with respect to other futex operations on  the
-    /// same  futex word.  If the thread starts to sleep, it
-    /// is considered a waiter on this futex word.   If  the
-    /// futex  value does not match val, then the call fails
-    /// immediately with the error EAGAIN.
+    /// Wait on futex if value matches
+    ///
+    /// Tests that the futex word contains the expected value,
+    /// then sleeps waiting for FUTEX_WAKE. The load, comparison,
+    /// and sleep are atomic.
     Wait = 0,
-    /// This operation wakes at most val of the waiters that
-    /// are waiting (e.g., inside FUTEX_WAIT) on  the  futex
-    /// word  at  the  address uaddr.  Most commonly, val is
-    /// specified as either 1 (wake up a single  waiter)  or
-    /// INT_MAX (wake up all waiters).  No guarantee is pro‐
-    /// vided about which waiters are awoken (e.g., a waiter
-    /// with  a higher scheduling priority is not guaranteed
-    /// to be awoken in preference to a waiter with a  lower
-    /// priority).
+
+    /// Wake waiters on futex
+    ///
+    /// Wakes at most `val` waiters waiting on this futex.
+    /// Common values: 1 (single waiter) or INT_MAX (all waiters)
     Wake = 1,
+
+    /// File descriptor operations (not implemented)
     Fd = 2,
+    /// Requeue waiters (not implemented)
     Requeue = 3,
+    /// Compare and requeue (not implemented)
     CmpRequeue = 4,
+    /// Wake with operation (not implemented)
     WakeOp = 5,
+    /// Priority inheritance lock (not implemented)
     LockPi = 6,
+    /// Priority inheritance unlock (not implemented)
     UnlockPi = 7,
+    /// Try priority inheritance lock (not implemented)
     TrylockPi = 8,
+    /// Wait with bitset (not implemented)
     WaitBitset = 9,
+
     #[num_enum(default)]
-    // 不在范围内，默认值为Invalid
+    /// Invalid operation
     Invalid,
 }
 
-/// Fast Userspace Mutex
-/// 快速用户空间互斥锁
-/// # 作用
-/// + 用于存储等待队列
-/// # 参数
-/// + key：usize
-/// + value：WaitQueue
+/// Fast Userspace Mutex (Futex)
+///
+/// Manages wait queues for futex operations. Maps futex addresses
+/// to their associated wait queues.
 pub struct Futex {
     inner: BTreeMap<usize, WaitQueue>,
 }
 
-/// 原作者注释：目前 `rt_clk` 被忽略
-/// ---
-/// 用于实现Futex的Wait操作
-/// # 参数
-/// - `futex_word`: 指向 Futex 变量的指针（可变引用）。
-/// - `val`: 期望的 Futex 变量的值。如果 Futex 变量的当前值不等于 `val`，则立即返回错误。
-/// - `timeout`: 可选的超时时间。如果指定了超时时间，任务将在超时后自动唤醒。
+/// Implement futex wait operation
 ///
-/// # 返回值
-/// - 成功时返回 `SUCCESS`。
-/// - 如果 Futex 变量的值不等于 `val`，返回 `EAGAIN`。
-/// - 如果任务被信号中断，返回 `EINTR`。
+/// Atomically checks if the futex word matches the expected value,
+/// and if so, blocks the current task until woken or timeout expires.
+///
+/// # Arguments
+/// * `futex_word` - Pointer to the futex variable
+/// * `val` - Expected value; fails if current value doesn't match
+/// * `timeout` - Optional timeout duration
+///
+/// # Returns
+/// * `SUCCESS` on successful wake
+/// * `EAGAIN` if futex value doesn't match
+/// * `EINTR` if interrupted by signal
+///
+/// # Note
+/// Currently ignores the `rt_clk` parameter
 pub fn do_futex_wait(futex_word: &mut u32, val: u32, timeout: Option<TimeSpec>) -> isize {
-    // 将超时时间转换为绝对时间（当前时间 + 超时时间）
+    // Convert relative timeout to absolute time
     let timeout = timeout.map(|t| t + TimeSpec::now());
 
-    // 获取 Futex 变量的地址（转换为 usize 以便作为键使用）
+    // Get futex address as key
     let futex_word_addr = futex_word as *const u32 as usize;
 
-    // 检查 Futex 变量的当前值是否等于期望值 `val`
+    // Atomically check value and block
     if *futex_word != val {
-        // 不匹配，记录日志并返回`EAGAIN`错误
         trace!(
             "[futex] --wait-- **not match** futex: {:X}, val: {:X}",
             *futex_word,
@@ -95,7 +102,6 @@ pub fn do_futex_wait(futex_word: &mut u32, val: u32, timeout: Option<TimeSpec>) 
         );
         return EAGAIN;
     } else {
-        // 获取当前任务的引用。
         let task = current_task().unwrap();
 
         // 获取 Futex 的锁，以便修改等待队列。

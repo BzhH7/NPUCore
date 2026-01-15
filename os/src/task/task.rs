@@ -1,3 +1,12 @@
+//! Task control block and task management
+//!
+//! This module defines:
+//! - Task control block (TCB) structure
+//! - Task state and status management
+//! - Process and thread creation
+//! - Signal handling infrastructure
+//! - Resource tracking (files, sockets, memory)
+
 use super::manager::TASK_MANAGERS;
 use super::pid::RecycleAllocator;
 use super::signal::*;
@@ -26,126 +35,132 @@ use log::trace;
 use spin::{Mutex, MutexGuard};
 use crate::task::processor::current_cpu_id;
 
+/// Task filesystem state
 #[derive(Clone)]
-/// 任务的文件系统状态
 pub struct FsStatus {
-    /// 当前工作目录的文件描述符
+    /// Current working directory file descriptor
     pub working_inode: Arc<FileDescriptor>,
 }
 
-/// 任务控制块
+/// Task control block (TCB)
+///
+/// Contains all information about a task including:
+/// - Process/thread identifiers
+/// - Kernel and user stacks
+/// - Memory space
+/// - File descriptors
+/// - Signal handling
 pub struct TaskControlBlock {
-    // 不可变字段
-    /// 进程ID
+    // Immutable fields
+    /// Process ID
     pub pid: PidHandle,
-    /// 线程ID
+    /// Thread ID
     pub tid: usize,
-    /// 线程组ID
+    /// Thread group ID (process ID)
     pub tgid: usize,
-    /// 内核栈
+    /// Kernel stack
     pub kstack: KernelStack,
-    /// 用户栈基址
+    /// User stack base address
     pub ustack_base: usize,
-    /// 退出信号
+    /// Exit signal
     pub exit_signal: Signals,
-    // 可变字段
-    /// 任务内部状态，使用互斥锁保护
+
+    // Mutable fields (protected by mutex)
+    /// Task inner state
     inner: Mutex<TaskControlBlockInner>,
-    // 可共享&可变字段
-    /// 可执行文件描述符
+
+    // Shared mutable fields
+    /// Executable file descriptor
     pub exe: Arc<Mutex<FileDescriptor>>,
-    /// 线程ID分配器
+    /// Thread ID allocator
     pub tid_allocator: Arc<Mutex<RecycleAllocator>>,
-    /// 文件描述符表
+    /// File descriptor table
     pub files: Arc<Mutex<FdTable>>,
-    /// Socket表
+    /// Socket table
     pub socket_table: Arc<Mutex<SocketTable>>,
-    /// 文件系统状态
+    /// Filesystem state
     pub fs: Arc<Mutex<FsStatus>>,
-    /// 虚拟内存空间
+    /// Virtual memory space
     pub vm: Arc<Mutex<MemorySet<PageTableImpl>>>,
-    /// 信号处理函数表
+    /// Signal handler table
     pub sighand: Arc<Mutex<Vec<Option<Box<SigAction>>>>>,
-    /// 快速用户空间互斥锁
+    /// Futex (fast userspace mutex)
     pub futex: Arc<Mutex<Futex>>,
 }
 
-/// 任务控制块内部状态
+/// Task control block inner state
 pub struct TaskControlBlockInner {
-    /// 信号掩码
+    /// Signal mask
     pub sigmask: Signals,
-    /// 待处理信号
+    /// Pending signals
     pub sigpending: Signals,
-    /// 陷阱上下文的物理页号
+    /// Trap context physical page number
     pub trap_cx_ppn: PhysPageNum,
-    /// 任务上下文
+    /// Task context
     pub task_cx: TaskContext,
-    /// 任务状态
+    /// Task status
     pub task_status: TaskStatus,
-    /// 父进程
+    /// Parent task
     pub parent: Option<Weak<TaskControlBlock>>,
-    /// 子进程
+    /// Child tasks
     pub children: Vec<Arc<TaskControlBlock>>,
-    /// 退出码
+    /// Exit code
     pub exit_code: u32,
-    /// 用于清理子进程的线程ID
+    /// Clear child TID address for futex wake
     pub clear_child_tid: usize,
-    /// 鲁棒列表，用于管理鲁棒互斥锁
+    /// Robust mutex list
     pub robust_list: RobustList,
-    /// 堆底
+    /// Heap bottom address
     pub heap_bottom: usize,
-    /// 堆页表
+    /// Heap page table
     pub heap_pt: usize,
-    /// 进程组ID
+    /// Process group ID
     pub pgid: usize,
-    /// 资源使用情况
+    /// Resource usage statistics
     pub rusage: Rusage,
-    /// 任务的时钟信息
+    /// Process clock information
     pub clock: ProcClock,
-    /// 定时器
+    /// Timers
     pub timer: [ITimerVal; 3],
 }
 
+/// Robust mutex list
+///
+/// Used for managing robust mutexes that automatically release
+/// when the holder thread dies
 #[derive(Clone, Copy, Debug)]
-/// 表示任务的鲁棒列表
-/// 用于管理鲁棒互斥锁
 pub struct RobustList {
-    /// 链表头
+    /// List head address
     pub head: usize,
-    /// 链表长度
+    /// List length
     pub len: usize,
 }
 
 impl RobustList {
-    // from strace
-    // 默认的链表头大小
+    /// Default head size (from strace)
     pub const HEAD_SIZE: usize = 24;
 }
 
 impl Default for RobustList {
-    /// 初始化方法
     fn default() -> Self {
         Self {
-            // 链表头
             head: 0,
-            // 链表长度
             len: Self::HEAD_SIZE,
         }
     }
 }
 
+/// Process clock tracking
 #[repr(C)]
-/// 进程时钟
-/// 表示任务的时钟信息
 pub struct ProcClock {
-    /// 上次进入用户态的时间
+    /// Last time entered user mode
     last_enter_u_mode: TimeVal,
-    /// 上次进入内核态的时间
+    /// Last time entered kernel mode
     last_enter_s_mode: TimeVal,
 }
 
 impl ProcClock {
-    /// 构造函数
+    /// Create a new process clock
     pub fn new() -> Self {
         // 获取当前时间
         let now = TimeVal::now();
