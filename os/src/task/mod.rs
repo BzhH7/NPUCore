@@ -8,6 +8,7 @@ mod task;
 pub mod threads;
 
 use crate::hal::__switch;
+use crate::hal::disable_interrupts;
 use crate::{
     fs::{OpenFlags, ROOT_FD},
     mm::translated_refmut,
@@ -48,7 +49,7 @@ pub fn try_yield() {
 
 pub fn suspend_current_and_run_next() {
     // ==== 关键修复：关中断 ====
-    unsafe { sstatus::clear_sie(); }
+    disable_interrupts();
 
     // 尝试获取当前任务，使用 if let 处理 None 的情况
     if let Some(task) = take_current_task() {
@@ -177,7 +178,7 @@ pub fn do_exit(task: Arc<TaskControlBlock>, exit_code: u32) {
 
 pub fn exit_current_and_run_next(exit_code: u32) -> ! {
     // ==== 关键修复：关中断 ====
-    unsafe { sstatus::clear_sie(); }
+    disable_interrupts();
 
     // take from Processor
     let task = take_current_task().unwrap();

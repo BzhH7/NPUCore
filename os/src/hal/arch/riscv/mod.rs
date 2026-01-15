@@ -31,3 +31,17 @@ pub type InterruptImpl = riscv::register::scause::Interrupt;
 pub type ExceptionImpl = riscv::register::scause::Exception;
 
 pub fn bootstrap_init() {}
+
+pub fn disable_interrupts() -> bool {
+    let sie = riscv::register::sstatus::read().sie();
+    if sie {
+        unsafe { riscv::register::sstatus::clear_sie(); }
+    }
+    sie
+}
+
+pub fn restore_interrupts(was_enabled: bool) {
+    if was_enabled {
+        unsafe { riscv::register::sstatus::set_sie(); }
+    }
+}

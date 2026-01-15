@@ -125,3 +125,18 @@ pub fn bootstrap_init() {
     println!("[kernel] UART address: {:#x}", UART_BASE);
     println!("[bootstrap_init] {:?}", PRCfg1::read());
 }
+
+pub fn disable_interrupts() -> bool {
+    let mut crmd = CrMd::read();
+    let was_enabled = crmd.is_interrupt_enabled();
+    if was_enabled {
+        crmd.set_ie(false).write();
+    }
+    was_enabled
+}
+
+pub fn restore_interrupts(was_enabled: bool) {
+    if was_enabled {
+        CrMd::read().set_ie(true).write();
+    }
+}
