@@ -3,11 +3,12 @@ use core::panic::PanicInfo;
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    let msg = info.message();
-
-    let msg_str = match msg.as_str() {
-        Some(s) => s,
-        None => "(no message)",
+    let msg_str = match info.message() {
+        Some(msg) => match msg.as_str() {
+            Some(s) => s,
+            None => "(panic message)",
+        },
+        None => "(panic message)",
     };
 
     if let Some(location) = info.location() {
@@ -24,5 +25,6 @@ fn panic(info: &PanicInfo) -> ! {
             msg_str
         );
     }
+
     exit(-1);
 }
