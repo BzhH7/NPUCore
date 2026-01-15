@@ -1,7 +1,7 @@
 use super::{__switch, do_wake_expired};
 use super::{fetch_task, TaskStatus};
 use super::{TaskContext, TaskControlBlock};
-use crate::hal::TrapContext;
+use crate::hal::{TrapContext, disable_interrupts, restore_interrupts};
 use alloc::sync::Arc;
 use lazy_static::*;
 use spin::Mutex;
@@ -60,15 +60,13 @@ lazy_static! {
 }
 
 /// 运行任务调度
-// 引用 sstatus
-use riscv::register::sstatus;
 
 pub fn run_tasks() {
     loop {
         let cpu_id = current_cpu_id();
         
         // 1. 【关键】获取锁之前必须关闭中断，防止中断处理函数重入导致死锁
-        unsafe { sstatus::clear_sie(); }
+        disable_interrupts();
 
         let mut processor = PROCESSORS[cpu_id].lock();
         
@@ -96,23 +94,24 @@ pub fn run_tasks() {
             log::info!("[run_tasks] No tasks. Enabling interrupts and entering wfi...");
 
             // ==== DEBUG START: 检查中断寄存器 ====
-            let sstatus_val = unsafe { riscv::register::sstatus::read() };
-            let sie_val = unsafe { riscv::register::sie::read() };
-            let sip_val = unsafe { riscv::register::sip::read() };
-            let time_val = unsafe { riscv::register::time::read() };
-            // sstatus.sie() 是全局中断使能位 (Bit 1)
-            // sie.stie() 是时钟中断使能位 (Bit 5)
-            // sip.stip() 是时钟中断等待位 (Bit 5)
-            log::info!("[Idle Debug] sstatus: {:?}, sie: {:?}, sip: {:?}, time: {}", 
-                sstatus_val, sie_val, sip_val, time_val);
+            #[cfg(feature = "riscv")]
+            {
+                let sstatus_val = unsafe { riscv::register::sstatus::read() };
+                let sie_val = unsafe { riscv::register::sie::read() };
+                let sip_val = unsafe { riscv::register::sip::read() };
+                let time_val = unsafe { riscv::register::time::read() };
+                // sstatus.sie() 是全局中断使能位 (Bit 1)
+                // sie.stie() 是时钟中断使能位 (Bit 5)
+                // sip.stip() 是时钟中断等待位 (Bit 5)
+                log::info!("[Idle Debug] sstatus: {:?}, sie: {:?}, sip: {:?}, time: {}", 
+                    sstatus_val, sie_val, sip_val, time_val);
+            }
             // ==== DEBUG END ====
             // 3. 【关键】Idle 状态处理
             // 必须开启中断才能被唤醒（响应时钟中断或其他），
             // 使用 wfi 等待以降低功耗。
-            unsafe {
-                sstatus::set_sie(); 
-                // riscv::asm::wfi(); 
-            }
+            restore_interrupts(true);
+            // riscv::asm::wfi(); 
             log::info!("[run_tasks] Woke up from wfi!");
         }
     }
@@ -120,28 +119,19 @@ pub fn run_tasks() {
 
 pub fn take_current_task() -> Option<Arc<TaskControlBlock>> {
     let cpu_id = current_cpu_id();
-    let sstatus = unsafe { riscv::register::sstatus::read() };
-    let was_enabled = sstatus.sie();
-    unsafe { riscv::register::sstatus::clear_sie(); }
+    let was_enabled = disable_interrupts();
     let task = PROCESSORS[cpu_id].lock().take_current();
-    if was_enabled {
-        unsafe { riscv::register::sstatus::set_sie(); }
-    }
+    restore_interrupts(was_enabled);
     task
 }
 
 pub fn current_task() -> Option<Arc<TaskControlBlock>> {
     let cpu_id = current_cpu_id();
-    // 1. 获取当前 sstatus 状态
-    let sstatus = unsafe { riscv::register::sstatus::read() };
-    let was_enabled = sstatus.sie();
-    // 2. 关中断以获取锁
-    unsafe { riscv::register::sstatus::clear_sie(); }
+    // 1. 关中断以获取锁
+    let was_enabled = disable_interrupts();
     let task = PROCESSORS[cpu_id].lock().current();
     // 3. 仅在进入前是开启状态时，才恢复中断
-    if was_enabled {
-        unsafe { riscv::register::sstatus::set_sie(); }
-    }
+    restore_interrupts(was_enabled);
     // 如果之前是关闭的（如在 trap_handler 中），则保持关闭
     task
 }
@@ -175,7 +165,7 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     let cpu_id = current_cpu_id();
     
     // 【关键修复】关中断防止死锁
-    unsafe { sstatus::clear_sie(); }
+    disable_interrupts();
     // log::info!("[schedule] Getting idle_ta   sk_cx_ptr...");
     let idle_task_cx_ptr = PROCESSORS[cpu_id].lock().get_idle_task_cx_ptr();
     // log::info!("[schedule] Switching to idle...");

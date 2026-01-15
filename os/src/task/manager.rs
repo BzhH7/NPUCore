@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 
 use crate::timer::TimeSpec;
 use crate::config::MAX_CPU_NUM; // 引入CPU数量配置
+use crate::hal::{disable_interrupts, restore_interrupts};
 
 use super::{current_task, TaskControlBlock};
 use alloc::collections::{BinaryHeap, VecDeque};
@@ -19,29 +20,14 @@ use lazy_static::*;
 use spin::Mutex;
 use crate::task::processor::current_cpu_id;
 
-#[cfg(feature = "riscv")]
-use riscv::register::sstatus;
-
 // === 辅助函数：关中断并返回之前的状态 ===
 fn push_off() -> bool {
-    #[cfg(feature = "riscv")]
-    unsafe {
-        let sie = sstatus::read().sie();
-        if sie {
-            sstatus::clear_sie();
-        }
-        sie
-    }
-    #[cfg(not(feature = "riscv"))]
-    true // 其他架构暂时默认处理，需根据实际情况修改
+    disable_interrupts()
 }
 
 // === 辅助函数：恢复中断 ===
 fn pop_off(interrupts: bool) {
-    #[cfg(feature = "riscv")]
-    if interrupts {
-        unsafe { sstatus::set_sie() };
-    }
+    restore_interrupts(interrupts);
 }
 
 #[cfg(feature = "oom_handler")]

@@ -31,7 +31,6 @@ pub use processor::{
 pub use signal::*;
 pub use task::{RobustList, Rusage, TaskControlBlock, TaskStatus};
 use self::processor::{PROCESSORS, current_cpu_id};
-use riscv::register::sstatus;
 
 #[allow(unused)]
 pub fn try_yield() {
@@ -76,7 +75,7 @@ pub fn block_current_and_run_next() {
     // ==== 关键修复：关中断 ====
     // 防止在持有 TASK_MANAGERS 锁或 TCB 锁时被 Timer 中断打断导致死锁
     log::info!("[block] Enter. Disabling interrupts...");
-    unsafe { sstatus::clear_sie(); }
+    disable_interrupts();
     log::info!("[block] Interrupts disabled.");
     // There must be an application running.
     let task = take_current_task().unwrap();
@@ -191,7 +190,7 @@ pub fn exit_current_and_run_next(exit_code: u32) -> ! {
 
 pub fn exit_group_and_run_next(exit_code: u32) -> ! {
     // ==== 关键修复：关中断 ====
-    unsafe { sstatus::clear_sie(); }
+    disable_interrupts();
 
     let task = take_current_task().unwrap();
     let tgid = task.tgid;
