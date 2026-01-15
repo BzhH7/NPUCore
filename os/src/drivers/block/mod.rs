@@ -1,3 +1,12 @@
+//! Block device drivers
+//!
+//! Provides unified block device interface with multiple implementations:
+//! - Memory block device (for testing without real storage)
+//! - SATA disk driver
+//! - VirtIO block device (MMIO and PCI variants)
+//!
+//! The actual implementation is selected at compile time via feature flags.
+
 mod block_dev;
 mod mem_blk;
 mod sata_blk;
@@ -5,7 +14,10 @@ mod sata_blk;
 mod virtio_blk;
 #[cfg(feature = "block_virt_pci")]
 mod virtio_blk_pci;
+
 pub use block_dev::BlockDevice;
+
+// Select block device implementation based on features
 #[cfg(feature = "block_mem")]
 type BlockDeviceImpl = mem_blk::MemBlockWrapper;
 #[cfg(feature = "block_sata")]
@@ -20,9 +32,13 @@ use alloc::sync::Arc;
 use lazy_static::*;
 
 lazy_static! {
+    /// Global block device instance
     pub static ref BLOCK_DEVICE: Arc<dyn BlockDevice> = Arc::new(BlockDeviceImpl::new());
 }
 
+/// Test block device read/write operations
+///
+/// Writes and reads back all blocks to verify correct operation
 #[allow(unused)]
 pub fn block_device_test() {
     let block_device = BLOCK_DEVICE.clone();
