@@ -221,7 +221,8 @@ if [ "$2" = "visionfive2" ]; then
     $SUDO cp -r ../user/RvTest/* ${U_FS_DIR}/fs/
 fi
 
-try_copy ../user/busybox_lua_testsuites/${ARCH} ${U_FAT32_DIR}/fs/
+# try_copy ../user/busybox_lua_testsuites/${ARCH} ${U_FAT32_DIR}/fs/
+try_copy ../user/testcases/${ARCH} ${U_FAT32_DIR}/fs/
 
 $SUDO umount ${U_FS_DIR}/fs
 echo "DONE"
