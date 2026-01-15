@@ -132,15 +132,21 @@ pub fn trap_handler() -> ! {
         | Trap::Exception(Exception::LoadFault)
         | Trap::Exception(Exception::LoadPageFault) => {
             if let Some(task) = current_task() {
-                let mut inner = task.acquire_inner_lock();
                 let addr = VirtAddr::from(stval);
                 log::debug!(
                     "[page_fault] pid: {}, type: {:?}",
                     task.pid.0,
                     scause.cause()
                 );
+                // 关键修复：先处理内存映射（持有 vm lock），再处理信号（持有 inner lock）
+                // 避免锁嵌套导致的死锁
                 frame_reserve(3);
-                if let Err(error) = task.vm.lock().do_page_fault(addr) {
+                let page_fault_result = {
+                    task.vm.lock().do_page_fault(addr)
+                };
+                
+                if let Err(error) = page_fault_result {
+                    let mut inner = task.acquire_inner_lock();
                     match error {
                         MemoryError::BeyondEOF => {
                             inner.add_signal(Signals::SIGBUS);

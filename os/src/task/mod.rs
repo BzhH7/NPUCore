@@ -84,58 +84,94 @@ pub fn block_current_and_run_next() {
 }
 
 pub fn do_exit(task: Arc<TaskControlBlock>, exit_code: u32) {
-    // **** hold current PCB lock
-    let mut inner = task.acquire_inner_lock();
-    if !task.exit_signal.is_empty() {
-        if let Some(parent) = inner.parent.as_ref() {
-            let parent_task = parent.upgrade().unwrap(); // this will acquire inner of current task
-            let mut parent_inner = parent_task.acquire_inner_lock();
-            parent_inner.add_signal(task.exit_signal);
-
-            if parent_inner.task_status == TaskStatus::Interruptible {
-                // wake up parent if parent is waiting.
-                parent_inner.task_status = TaskStatus::Ready;
-                drop(parent_inner);
-                // push back to ready queue.
+    // 多核安全重构：避免嵌套锁导致死锁
+    // 策略：分阶段执行，每阶段只持有一把锁
+    
+    // === 阶段1：收集需要的信息并设置基本状态 ===
+    let (need_signal_parent, parent_task_opt, children_to_move, clear_child_tid, user_token) = {
+        let mut inner = task.acquire_inner_lock();
+        
+        // 设置 zombie 状态和 exit_code
+        inner.task_status = TaskStatus::Zombie;
+        inner.exit_code = exit_code;
+        
+        // 收集父任务信息
+        let parent = if !task.exit_signal.is_empty() {
+            inner.parent.as_ref().and_then(|p| p.upgrade())
+        } else {
+            None
+        };
+        
+        // 收集子任务列表（move out）
+        let children: VecDeque<Arc<TaskControlBlock>> = inner.children.drain(..).collect();
+        
+        let clear_tid = inner.clear_child_tid;
+        let token = task.get_user_token();
+        
+        (task.exit_signal, parent, children, clear_tid, token)
+    };
+    // inner lock released here
+    
+    // === 阶段2：通知父任务 ===
+    if !need_signal_parent.is_empty() {
+        if let Some(parent_task) = parent_task_opt {
+            let need_wake = {
+                let mut parent_inner = parent_task.acquire_inner_lock();
+                parent_inner.add_signal(need_signal_parent);
+                
+                if parent_inner.task_status == TaskStatus::Interruptible {
+                    parent_inner.task_status = TaskStatus::Ready;
+                    true
+                } else {
+                    false
+                }
+            };
+            // parent_inner lock released here
+            
+            if need_wake {
                 wake_interruptible(parent_task);
             }
         } else {
             warn!("[do_exit] parent is None");
         }
     }
-    log::trace!(
-        "[do_exit] Trying to exit pid {} with {}",
-        task.pid.0,
-        exit_code
-    );
-    // Change status to Zombie
-    inner.task_status = TaskStatus::Zombie;
-    // Record exit code
-    inner.exit_code = exit_code;
-
-    // move children to initproc
-    if !inner.children.is_empty() {
-        let mut initproc_inner = INITPROC.acquire_inner_lock();
-        while let Some(child) = inner.children.pop() {
-            child.acquire_inner_lock().parent = Some(Arc::downgrade(&INITPROC));
-            initproc_inner.children.push(child);
+    
+    // === 阶段3：将子任务移交给 initproc ===
+    if !children_to_move.is_empty() {
+        // 先更新每个子任务的 parent 指针
+        for child in children_to_move.iter() {
+            let mut child_inner = child.acquire_inner_lock();
+            child_inner.parent = Some(Arc::downgrade(&INITPROC));
         }
-        if initproc_inner.task_status == TaskStatus::Interruptible {
-            // wake up initproc if initproc is waiting.
-            initproc_inner.task_status = TaskStatus::Ready;
-            // push back to ready queue.
+        
+        // 然后更新 initproc 的子任务列表
+        let need_wake_initproc = {
+            let mut initproc_inner = INITPROC.acquire_inner_lock();
+            for child in children_to_move {
+                initproc_inner.children.push(child);
+            }
+            
+            if initproc_inner.task_status == TaskStatus::Interruptible {
+                initproc_inner.task_status = TaskStatus::Ready;
+                true
+            } else {
+                false
+            }
+        };
+        // initproc_inner lock released here
+        
+        if need_wake_initproc {
             wake_interruptible(INITPROC.clone());
         }
     }
-
-    inner.children.clear();
-    if inner.clear_child_tid != 0 {
+    
+    // === 阶段4：处理 clear_child_tid (futex) ===
+    if clear_child_tid != 0 {
         log::debug!(
             "[do_exit] do futex wake on clear_child_tid: {:X}",
-            inner.clear_child_tid
+            clear_child_tid
         );
-        //let phys_ref =
-        match translated_refmut(task.get_user_token(), inner.clear_child_tid as *mut u32) {
+        match translated_refmut(user_token, clear_child_tid as *mut u32) {
             Ok(phys_ref) => {
                 *phys_ref = 0;
                 task.futex.lock().wake(phys_ref as *const u32 as usize, 1);
@@ -143,17 +179,21 @@ pub fn do_exit(task: Arc<TaskControlBlock>, exit_code: u32) {
             Err(_) => log::warn!("invalid clear_child_tid"),
         };
     }
-    // deallocate user resource (trap context and user stack)
-    task.vm.lock().dealloc_user_res(task.tid);
-    // deallocate whole user space in advance, or if its parent do not call wait,
-    // this resource may not be recycled in a long period of time.
-    if Arc::strong_count(&task.vm) == 1 {
-        task.vm.lock().recycle_data_pages();
+    
+    // === 阶段5：释放用户资源 ===
+    {
+        let mut vm_lock = task.vm.lock();
+        vm_lock.dealloc_user_res(task.tid);
+        if Arc::strong_count(&task.vm) == 1 {
+            vm_lock.recycle_data_pages();
+        }
     }
-    drop(inner);
-    // **** release current PCB lock
-    // drop task manually to maintain rc correctly
-    log::info!("[do_exit] Pid {} exited with {}", task.pid.0, exit_code);
+    
+    log::trace!(
+        "[do_exit] Pid {} exited with {}",
+        task.pid.0,
+        exit_code
+    );
 }
 
 pub fn exit_current_and_run_next(exit_code: u32) -> ! {

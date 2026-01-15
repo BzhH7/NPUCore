@@ -198,7 +198,6 @@ pub fn trap_handler() -> ! {
         | Trap::Exception(Exception::PageNonReadableFault)
         | Trap::Exception(Exception::PageNonExecutableFault) => {
             let task = current_task().unwrap();
-            let mut inner = task.acquire_inner_lock();
             let addr = VirtAddr::from(get_bad_addr());
             log::debug!("[page_fault] pid: {}, type: {:?}", task.pid.0, cause);
             log::debug!(
@@ -210,22 +209,28 @@ pub fn trap_handler() -> ! {
                 TLBRELo1::read(),
                 PWCL::read(),
             );
-            // This is where we handle the page fault.
+            // 关键修复：先处理内存映射（持有 vm lock），再处理信号（持有 inner lock）
+            // 避免锁嵌套导致的死锁
             frame_reserve(3);
-            let mut mset_lock = task.vm.lock();
-            match mset_lock.do_page_fault(addr) {
-                Err(error) => match error {
-                    MemoryError::BeyondEOF => {
-                        inner.add_signal(Signals::SIGBUS);
+            let page_fault_result = {
+                let mut mset_lock = task.vm.lock();
+                mset_lock.do_page_fault(addr)
+            };
+            
+            match page_fault_result {
+                Err(error) => {
+                    let mut inner = task.acquire_inner_lock();
+                    match error {
+                        MemoryError::BeyondEOF => {
+                            inner.add_signal(Signals::SIGBUS);
+                        }
+                        MemoryError::NoPermission | MemoryError::BadAddress => {
+                            inner.add_signal(Signals::SIGSEGV);
+                        }
+                        _ => unreachable!(),
                     }
-                    MemoryError::NoPermission | MemoryError::BadAddress => {
-                        inner.add_signal(Signals::SIGSEGV);
-                    }
-                    _ => unreachable!(),
                 },
                 Ok(_) => {
-                    //tlb_addr_allow_write(addr.floor(), _paddr.floor()).unwrap();
-                    drop(mset_lock);
                     if let Trap::Exception(
                         Exception::PageModifyFault | Exception::PageInvalidStore,
                     ) = cause

@@ -396,13 +396,40 @@ pub fn sleep_interruptible(task: Arc<TaskControlBlock>) {
     log::info!("[sleep_interruptible] Task added to queue. Unlocked.");
 }
 
+/// Wake a task from interruptible state.
+/// 
+/// This function searches through all CPU's task managers to find and wake the specified task.
+/// 
+/// # Multi-core Safety
+/// Uses try_lock() to avoid deadlocks when other CPUs have locked their managers.
+/// If a manager is locked by another CPU, we skip it and retry the entire loop.
+/// This is safe because the task can only be in one manager's interruptible queue.
 pub fn wake_interruptible(task: Arc<TaskControlBlock>) {
     let _guard = InterruptGuard::new();
-    for manager in TASK_MANAGERS.iter() {
-        let mut manager = manager.lock();
-        if manager.try_wake_interruptible(Arc::clone(&task)).is_ok() {
+    
+    // 使用重试循环，避免跨 CPU 死锁
+    loop {
+        let mut all_checked = true;
+        
+        for manager in TASK_MANAGERS.iter() {
+            // 使用 try_lock 避免阻塞等待其他 CPU 的锁
+            if let Some(mut manager) = manager.try_lock() {
+                if manager.try_wake_interruptible(Arc::clone(&task)).is_ok() {
+                    return; // 成功唤醒
+                }
+            } else {
+                // 有锁竞争，标记需要重试
+                all_checked = false;
+            }
+        }
+        
+        // 如果检查了所有 manager 都没找到，说明任务已被唤醒或不在队列中
+        if all_checked {
             return;
         }
+        
+        // 短暂让出 CPU，减少锁竞争
+        core::hint::spin_loop();
     }
 }
 
