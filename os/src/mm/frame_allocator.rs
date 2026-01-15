@@ -1,3 +1,7 @@
+//! Physical frame allocator
+//!
+//! Provides stack-based frame allocation for physical memory management.
+
 #[cfg(feature = "oom_handler")]
 use super::super::fs;
 use super::{PhysAddr, PhysPageNum};
@@ -10,21 +14,26 @@ use core::fmt::{self, Debug, Formatter};
 use lazy_static::*;
 use spin::RwLock;
 
-/// 物理帧跟踪器
+/// Physical frame tracker with automatic deallocation
 pub struct FrameTracker {
-    /// 跟踪的物理页号
+    /// The physical page number being tracked
     pub ppn: PhysPageNum,
 }
 
 impl FrameTracker {
+    /// Create a new frame tracker and zero-initialize the frame
     pub fn new(ppn: PhysPageNum) -> Self {
-        // 清理页面内容
         let dwords_array = ppn.get_dwords_array();
         for i in dwords_array {
             *i = 0;
         }
         Self { ppn }
     }
+
+    /// Create a new frame tracker without initialization
+    ///
+    /// # Safety
+    /// The caller must ensure the frame content is properly handled
     pub unsafe fn new_uninit(ppn: PhysPageNum) -> Self {
         Self { ppn }
     }
@@ -35,36 +44,35 @@ impl Debug for FrameTracker {
         f.write_fmt(format_args!("FrameTracker:PPN={:#x}", self.ppn.0))
     }
 }
+
 impl Drop for FrameTracker {
-    // 自动回收物理帧
     fn drop(&mut self) {
-        // println!("do drop at {}", self.ppn.0);
         frame_dealloc(self.ppn);
     }
 }
 
-/// 帧分配器接口
+/// Frame allocator trait
 trait FrameAllocator {
     fn new() -> Self;
-    /// 分配
     fn alloc(&mut self) -> Option<FrameTracker>;
     unsafe fn alloc_uninit(&mut self) -> Option<FrameTracker>;
-    /// 释放
     fn dealloc(&mut self, ppn: PhysPageNum);
 }
 
-/// 栈式帧分配器
+/// Stack-based frame allocator
+///
+/// Uses a simple stack to track free frames, prioritizing recycled frames.
 pub struct StackFrameAllocator {
-    // 当前分配器的位置，指向可分配区域的开始
+    /// Current allocation position
     current: usize,
-    // 分配器的结束地址，表示可分配内存区域的末尾
+    /// End of allocatable region
     end: usize,
-    // 已回收的页面（内存框架）的列表
+    /// List of recycled frames
     recycled: Vec<usize>,
 }
 
 impl StackFrameAllocator {
-    /// 初始化方法
+    /// Initialize the allocator with a physical page range
     pub fn init(&mut self, l: PhysPageNum, r: PhysPageNum) {
         self.current = l.0;
         self.end = r.0;
@@ -72,7 +80,8 @@ impl StackFrameAllocator {
         self.recycled.reserve(last_frames);
         println!("last {} Physical Frames.", last_frames);
     }
-    /// 计算未分配的大小
+
+    /// Get the number of unallocated frames
     pub fn unallocated_frames(&self) -> usize {
         self.end - self.current + self.recycled.len()
     }
