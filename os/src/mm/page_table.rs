@@ -1,3 +1,11 @@
+//! Page table management and address translation
+//!
+//! This module provides:
+//! - Page table trait and operations (map, unmap, translate)
+//! - User space memory access from kernel
+//! - Buffer translation between user and kernel space
+//! - Page fault handling integration
+
 use core::ops::IndexMut;
 
 pub use super::memory_set::check_page_fault;
@@ -5,38 +13,49 @@ use super::{MapPermission, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageN
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// Page table trait defining core operations
 #[allow(unused)]
 pub trait PageTable {
-    /// 基本映射操作
-    /// map、unmap、translate、translate_va
-    /// 通过指定flags将vpn映射到ppn
-    /// # 注意
-    /// Allocation should be done elsewhere.
-    /// # 特例
-    /// Panics if the `vpn` is mapped.
+    /// Map virtual page number to physical page number with given permissions
+    ///
+    /// # Panics
+    /// Panics if the `vpn` is already mapped
+    ///
+    /// # Note
+    /// Frame allocation should be done elsewhere
     fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: MapPermission);
     #[inline(always)]
     fn map_identical(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: MapPermission) {
         self.map(vpn, ppn, flags)
     }
+
+    /// Unmap a virtual page number
+    ///
+    /// # Panics
+    /// Panics if the `vpn` is NOT mapped
     #[allow(unused)]
-    /// Unmap the `vpn` to `ppn` with the `flags`.
-    /// # Exceptions
-    /// Panics if the `vpn` is NOT mapped (invalid).
     fn unmap(&mut self, vpn: VirtPageNum);
+
     #[inline(always)]
     fn unmap_identical(&mut self, vpn: VirtPageNum) {
         self.unmap(vpn)
     }
-    /// Translate the `vpn` into its corresponding `Some(PageTableEntry)` if exists
-    /// `None` is returned if nothing is found.
+
+    /// Translate virtual page number to physical page number
+    ///
+    /// Returns `None` if not mapped
     fn translate(&self, vpn: VirtPageNum) -> Option<PhysPageNum>;
-    /// Translate the virtual address into its corresponding `PhysAddr` if mapped in current page table.
-    /// `None` is returned if nothing is found.
+
+    /// Translate virtual address to physical address
+    ///
+    /// Returns `None` if not mapped
     fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr>;
+
     fn block_and_ret_mut(&self, vpn: VirtPageNum) -> Option<PhysPageNum>;
-    /// Return the physical token to current page.
+
+    /// Return the page table token (satp register value)
     fn token(&self) -> usize;
+
     fn revoke_read(&mut self, vpn: VirtPageNum) -> Result<(), ()>;
     fn revoke_write(&mut self, vpn: VirtPageNum) -> Result<(), ()>;
     fn revoke_execute(&mut self, vpn: VirtPageNum) -> Result<(), ()>;
@@ -44,7 +63,9 @@ pub trait PageTable {
     fn set_pte_flags(&mut self, vpn: VirtPageNum, flags: MapPermission) -> Result<(), ()>;
     fn clear_access_bit(&mut self, vpn: VirtPageNum) -> Result<(), ()>;
     fn clear_dirty_bit(&mut self, vpn: VirtPageNum) -> Result<(), ()>;
+
     fn new() -> Self;
+
     #[inline(always)]
     fn new_kern_space() -> Self
     where
@@ -52,13 +73,19 @@ pub trait PageTable {
     {
         Self::new()
     }
-    /// Create an empty page table from `satp`
-    /// # Argument
-    /// * `satp` Supervisor Address Translation & Protection reg. that points to the physical page containing the root page.
+
+    /// Create a page table from satp token
+    ///
+    /// # Arguments
+    /// * `satp` - Supervisor Address Translation & Protection register value
     fn from_token(satp: usize) -> Self;
-    /// Predicate for the valid bit.
+
+    /// Check if a virtual page is mapped
     fn is_mapped(&mut self, vpn: VirtPageNum) -> bool;
+
+    /// Activate this page table (switch to it)
     fn activate(&self);
+
     fn is_valid(&self, vpn: VirtPageNum) -> Option<bool>;
     fn is_dirty(&self, vpn: VirtPageNum) -> Option<bool>;
     fn readable(&self, vpn: VirtPageNum) -> Option<bool>;
@@ -66,12 +93,22 @@ pub trait PageTable {
     fn executable(&self, vpn: VirtPageNum) -> Option<bool>;
 }
 
+/// Generate start and end page numbers from virtual addresses
 #[allow(unused)]
 pub fn gen_start_end(start: VirtAddr, end: VirtAddr) -> (VirtPageNum, VirtPageNum) {
     (start.floor(), end.ceil())
 }
 
-/// if `existing_vec == None`, a empty `Vec` will be created.
+/// Append translated byte buffer to an existing vector
+///
+/// # Arguments
+/// * `existing_vec` - Vector to append translated buffers to
+/// * `token` - Page table token
+/// * `ptr` - User space pointer
+/// * `len` - Length of buffer
+///
+/// # Returns
+/// `Ok(())` on success, `Err(isize)` on page fault
 pub fn translated_byte_buffer_append_to_existing_vec(
     existing_vec: &mut Vec<&'static mut [u8]>,
     token: usize,
@@ -105,11 +142,21 @@ pub fn translated_byte_buffer_append_to_existing_vec(
     Ok(())
 }
 
-/// this is unused
+/// Check if page table flags are valid
+#[allow(unused)]
 pub fn ptf_ok(ptf: usize) -> bool {
     ptf & 1 == 1
 }
 
+/// Translate a byte buffer from user space to kernel space
+///
+/// # Arguments
+/// * `token` - Page table token
+/// * `ptr` - User space pointer
+/// * `len` - Length of buffer
+///
+/// # Returns
+/// Vector of byte slices on success, error code on page fault
 pub fn translated_byte_buffer(
     token: usize,
     ptr: *const u8,
@@ -150,7 +197,14 @@ pub fn get_right_aligned_bytes<T>(ptr: *const T) -> usize {
     (align - (ptr & mask)) & mask
 }
 
-/// Load a string from other address spaces into kernel space without an end `\0`.
+/// Load a string from user space into kernel space (without trailing null)
+///
+/// # Arguments
+/// * `token` - Page table token
+/// * `ptr` - User space pointer to C string
+///
+/// # Returns
+/// `String` on success, error code on page fault
 pub fn translated_str(token: usize, ptr: *const u8) -> Result<String, isize> {
     let page_table = super::PageTableImpl::from_token(token);
     let mut string = String::new();
@@ -173,7 +227,14 @@ pub fn translated_str(token: usize, ptr: *const u8) -> Result<String, isize> {
     Ok(string)
 }
 
-/// Translate the user space pointer `ptr` into a reference in user space through page table `token`
+/// Translate user space pointer to kernel reference
+///
+/// # Arguments
+/// * `token` - Page table token
+/// * `ptr` - User space pointer
+///
+/// # Returns
+/// Reference to the data on success, error code on page fault
 pub fn translated_ref<T>(token: usize, ptr: *const T) -> Result<&'static T, isize> {
     let page_table = super::PageTableImpl::from_token(token);
     let va = VirtAddr::from(ptr as usize);
@@ -184,9 +245,14 @@ pub fn translated_ref<T>(token: usize, ptr: *const T) -> Result<&'static T, isiz
     Ok(pa.get_ref())
 }
 
-/// Translate the user space pointer `ptr` into a mutable reference in user space through page table `token`
-/// # Implementation Information
-/// * Get the pagetable from token
+/// Translate user space pointer to mutable kernel reference
+///
+/// # Arguments
+/// * `token` - Page table token
+/// * `ptr` - User space pointer
+///
+/// # Returns
+/// Mutable reference to the data on success, error code on page fault
 pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> Result<&'static mut T, isize> {
     let page_table = super::PageTableImpl::from_token(token);
     let va = VirtAddr::from(ptr as usize);
