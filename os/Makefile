@@ -11,6 +11,7 @@ all: $(ARCHS)
 $(ARCHS):
 	@echo "Building for ARCH=$@"
 	make -f make/la_board/la64board.mk all BLK_MODE=mem BOARD=2k1000
+# 	make -f make/la_board/la64board.mk run-inner BLK_MODE=mem BOARD=2k1000
 
 rv64-kernel-build-only:
 	make -f make/rv64.mk build BLK_MODE=${BLK_MODE} MODE=${MODE} LOG=${LOG}
