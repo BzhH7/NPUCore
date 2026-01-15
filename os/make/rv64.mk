@@ -67,6 +67,7 @@ mv:
 build: env $(KERNEL_BIN) mv
 
 env:
+	rustup override set nightly-2024-02-03
 	(rustup target list | grep "riscv64gc-unknown-none-elf (installed)") || rustup target add $(TARGET)
 	rustup target add $(TARGET)
 	rustup component add rust-src
@@ -171,7 +172,7 @@ test:
 		-kernel $(KERNEL_RV) \
 		-m 128M \
 		-nographic \
-		-smp 1 \
+		-smp 4 \
 		-bios default \
 		-drive file=$(SDCARD_RV),if=none,format=raw,id=x0  \
 		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \

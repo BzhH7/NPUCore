@@ -1,5 +1,5 @@
 use super::{__switch, do_wake_expired};
-use super::{fetch_task, TaskStatus};
+use super::{fetch_task, add_task, sleep_interruptible, TaskStatus};
 use super::{TaskContext, TaskControlBlock};
 use crate::hal::{TrapContext, disable_interrupts, restore_interrupts};
 use alloc::sync::Arc;
@@ -15,6 +15,9 @@ pub struct Processor {
     current: Option<Arc<TaskControlBlock>>,
     /// 空闲任务的上下文，用于在任务切换时保存和恢复状态
     idle_task_cx: TaskContext,
+    /// 等待被加入就绪队列的任务（上下文已保存，等待被重新调度）
+    /// 用于解决多核竞争问题：任务上下文保存后才能被其他CPU偷取
+    pending_task: Option<Arc<TaskControlBlock>>,
 }
 
 impl Processor {
@@ -25,6 +28,8 @@ impl Processor {
             current: None,
             // 空闲任务的上下文
             idle_task_cx: TaskContext::zero_init(),
+            // 等待加入队列的任务
+            pending_task: None,
         }
     }
     /// 获取空闲任务的上下文指针
@@ -43,6 +48,14 @@ impl Processor {
     /// 检查当前 Processor 是否为空闲
     pub fn is_vacant(&self) -> bool {
         self.current.is_none()
+    }
+    /// 设置待加入就绪队列的任务
+    pub fn set_pending(&mut self, task: Arc<TaskControlBlock>) {
+        self.pending_task = Some(task);
+    }
+    /// 取出待加入就绪队列的任务
+    pub fn take_pending(&mut self) -> Option<Arc<TaskControlBlock>> {
+        self.pending_task.take()
     }
 }
 
@@ -70,6 +83,30 @@ pub fn run_tasks() {
 
         let mut processor = PROCESSORS[cpu_id].lock();
         
+        // 【关键修复】先检查是否有pending任务需要处理
+        // 这个任务的上下文已经在上次__switch时保存了
+        if let Some(pending) = processor.take_pending() {
+            // 根据任务状态决定加入哪个队列
+            let status = pending.acquire_inner_lock().task_status;
+            drop(processor); // 先释放锁再操作队列，避免锁顺序问题
+            
+            match status {
+                TaskStatus::Ready => {
+                    // 正常的 suspend 调用，加入就绪队列
+                    add_task(pending);
+                }
+                TaskStatus::Interruptible => {
+                    // block 调用，加入可中断等待队列
+                    sleep_interruptible(pending);
+                }
+                _ => {
+                    // 其他状态不应该出现在 pending 中
+                    panic!("[CPU {}] pending task has unexpected status: {:?}", cpu_id, status);
+                }
+            }
+            processor = PROCESSORS[cpu_id].lock();
+        }
+        
         if let Some(task) = fetch_task() {
             let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
             let next_task_cx_ptr = {
@@ -78,14 +115,37 @@ pub fn run_tasks() {
                 task_inner.task_status = TaskStatus::Running;
                 &task_inner.task_cx as *const TaskContext
             };
+            
+            // Debug: Check next_task_cx before switch
+            let next_ra = unsafe { (*next_task_cx_ptr).ra };
+            let next_sp = unsafe { (*next_task_cx_ptr).sp };
+            if next_ra == 0 {
+                panic!("[CPU {}] About to switch to task pid={} with ra=0x0!", 
+                       cpu_id, task.pid.0);
+            }
+            if next_ra < 0x80000000 || next_ra > 0xffffffff00000000 {
+                panic!("[CPU {}] About to switch to task pid={} with invalid ra=0x{:x}!", 
+                       cpu_id, task.pid.0, next_ra);
+            }
+            
+            // Memory barrier to ensure check happens before __switch
+            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+            
             processor.current = Some(task);
             drop(processor);
             
             // 2. 切换任务
-            // __switch 恢复的 sstatus 通常会包含开启中断（如果任务是在开启中断时被挂起的）
             unsafe {
                 __switch(idle_task_cx_ptr, next_task_cx_ptr);
             }
+            // 回到这里时，任务已被挂起，pending_task已设置（如果是正常suspend）
+            // Debug: Verify we came back correctly
+            let current_ra: usize;
+            unsafe { core::arch::asm!("mv {}, ra", out(reg) current_ra); }
+            if current_ra == 0 {
+                panic!("[CPU {}] Returned from __switch with ra=0!", cpu_id);
+            }
+            // 继续循环会处理pending_task
         } else {
             // 没有任务，释放锁
             drop(processor);
@@ -164,11 +224,26 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     let cpu_id = current_cpu_id();
     
+    // Sanity check: verify CPU id is valid
+    if cpu_id >= crate::config::MAX_CPU_NUM {
+        panic!("[schedule] Invalid cpu_id={}! MAX_CPU_NUM={}", cpu_id, crate::config::MAX_CPU_NUM);
+    }
+    
     // 【关键修复】关中断防止死锁
     disable_interrupts();
-    // log::info!("[schedule] Getting idle_ta   sk_cx_ptr...");
+    
     let idle_task_cx_ptr = PROCESSORS[cpu_id].lock().get_idle_task_cx_ptr();
-    // log::info!("[schedule] Switching to idle...");
+    
+    // Debug: Check idle_task_cx before switching back
+    let idle_ra = unsafe { (*idle_task_cx_ptr).ra };
+    let idle_sp = unsafe { (*idle_task_cx_ptr).sp };
+    if idle_ra == 0 {
+        panic!("[CPU {}] schedule(): idle_task_cx has ra=0x0! sp=0x{:x}", cpu_id, idle_sp);
+    }
+    if idle_ra < 0x80000000 || idle_ra > 0xffffffff00000000 {
+        panic!("[CPU {}] schedule(): idle_task_cx has invalid ra=0x{:x}!", cpu_id, idle_ra);
+    }
+    
     // 切换回 idle 循环
     unsafe {
         __switch(switched_task_cx_ptr, idle_task_cx_ptr);

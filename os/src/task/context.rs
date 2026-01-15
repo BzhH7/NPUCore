@@ -15,9 +15,9 @@ use crate::hal::trap_return;
 #[repr(C)]
 pub struct TaskContext {
     /// Return address
-    ra: usize,
+    pub ra: usize,
     /// Stack pointer
-    sp: usize,
+    pub sp: usize,
     /// Callee-saved registers (s0-s11)
     s: [usize; 12],
 }

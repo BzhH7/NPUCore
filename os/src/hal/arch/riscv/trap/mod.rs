@@ -75,11 +75,6 @@ pub fn enable_timer_interrupt() {
 #[no_mangle]
 pub fn trap_handler() -> ! {
     set_kernel_trap_entry();
-    
-    // === 添加调试打印 ===
-    let raw_tp: usize;
-    unsafe { core::arch::asm!("mv {}, tp", out(reg) raw_tp); }
-    let scause = scause::read();
 
     // 安全地记录时间，仅当有任务时
     if let Some(task) = current_task() {
@@ -183,6 +178,10 @@ pub fn trap_handler() -> ! {
             // 【关键修复】区分有任务和无任务(Idle)的情况
             if current_task().is_some() {
                 suspend_current_and_run_next();
+                // Debug: verify task is still current after resume
+                if current_task().is_none() {
+                    panic!("[trap_handler] current_task is None after suspend_current_and_run_next!");
+                }
             } else {
                 // 如果是 Idle 状态，不要走 trap_return (那会尝试切回用户态并 panic)
                 // 直接回到调度循环找新任务
@@ -229,6 +228,13 @@ pub fn trap_return() -> ! {
     set_user_trap_entry();
     // 这里的 unwrap 现在是安全的，因为我们在 trap_handler 里拦截了 None 的情况
     let task = current_task().unwrap();
+    
+    // ⚠️ 关键修复：在返回用户态前重新设置定时器
+    // 这样可以清除可能已经 pending 的定时器中断
+    // 特别重要：当任务从一个 CPU 迁移到另一个 CPU 时，
+    // 目标 CPU 的定时器可能已经在之前设置并 pending
+    set_next_trigger();
+    
     let trap_cx_ptr = task.trap_cx_user_va();
     let user_satp = task.get_user_token();
     drop(task);
@@ -249,15 +255,27 @@ static mut TICKS: usize = 0;
 pub fn trap_from_kernel() {
     use riscv::register::{sstatus, sepc};
 
-    // === 读取 tp ===
+    // === 读取 tp 和 sp ===
     let raw_tp: usize;
-    unsafe { core::arch::asm!("mv {}, tp", out(reg) raw_tp); }
+    let raw_sp: usize;
+    let raw_ra: usize;
+    unsafe { 
+        core::arch::asm!("mv {}, tp", out(reg) raw_tp);
+        core::arch::asm!("mv {}, sp", out(reg) raw_sp);
+        core::arch::asm!("mv {}, ra", out(reg) raw_ra);
+    }
     // ==============
 
     let scause = scause::read();
     let stval = stval::read();
     // 获取真正的内核崩溃地址
     let kernel_pc = sepc::read();
+    
+    // Debug: Check if sepc is 0 or invalid when entering kernel trap
+    if kernel_pc == 0 {
+        panic!("[KTRAP] sepc=0 on entry! TP={} SP={:#x} RA={:#x} cause={:?}", 
+               raw_tp, raw_sp, raw_ra, scause.cause());
+    }
     
     match scause.cause() {
         Trap::Interrupt(Interrupt::SupervisorTimer) => {
@@ -276,10 +294,21 @@ pub fn trap_from_kernel() {
             }
             // =============================================
 
-
+            // 【调试】暂时禁用内核态时钟中断的调度
+            // 内核态的时钟中断不调度，只更新时间并返回
+            // 这样可以排查是否是调度导致的问题
+            /*
             if current_task().is_some() {
                 suspend_current_and_run_next();
+                
+                // Debug: Check ra after resuming from suspend
+                let ra_after: usize;
+                unsafe { core::arch::asm!("mv {}, ra", out(reg) ra_after); }
+                if ra_after == 0 || ra_after < 0x80000000 {
+                    panic!("[KTRAP-TIMER] Invalid ra={:#x} after suspend!", ra_after);
+                }
             }
+            */
         }
         // 【修复】：添加对内核态外部中断的处理
         // 防止 UART 中断打断内核执行时导致 Panic
@@ -298,14 +327,9 @@ pub fn trap_from_kernel() {
             // }
         }
         _ => {
-            panic!(
-                "Kernel Panic! Trap: {:?}, Bad Addr: {:#x}, PC: {:#x}, TP: {}, CPU_ID: {}",
-                scause.cause(),
-                stval,
-                kernel_pc,
-                raw_tp, // 打印 tp 值
-                crate::task::processor::current_cpu_id() // 打印逻辑 CPU ID
-            );
+            println!("PANIC: {:?} at {:#x}", scause.cause(), kernel_pc);
+            println!("  BadAddr={:#x} TP={} SP={:#x} RA={:#x}", stval, raw_tp, raw_sp, raw_ra);
+            panic!("Kernel trap");
         }
     }
 }

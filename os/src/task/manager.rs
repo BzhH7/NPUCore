@@ -289,7 +289,9 @@ pub fn fetch_task() -> Option<Arc<TaskControlBlock>> {
         return task;
     }
 
-    // 2. Work Stealing: 遍历其他核心
+    // 2. Work Stealing: DISABLED FOR DEBUGGING
+    // 【调试】暂时禁用工作窃取以排查问题
+    /*
     for i in 0..MAX_CPU_NUM {
         if i == cpu_id {
             continue;
@@ -302,11 +304,11 @@ pub fn fetch_task() -> Option<Arc<TaskControlBlock>> {
                 #[cfg(feature = "oom_handler")]
                 other_manager.active_tracker.mark_active(task.pid.0);
                 
-                log::trace!("[cpu {}] stole task {} from cpu {}", cpu_id, task.pid.0, i);
                 return Some(task);
             }
         }
     }
+    */
     
     None
 }

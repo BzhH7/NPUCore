@@ -49,38 +49,60 @@ pub fn try_yield() {
 
 pub fn suspend_current_and_run_next() {
     let _guard = InterruptGuard::new();
+    let cpu_id = processor::current_cpu_id();
 
     if let Some(task) = take_current_task() {
-        let mut task_inner = task.acquire_inner_lock();
-        let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
-        task_inner.task_status = TaskStatus::Ready;
-        drop(task_inner);
+        let task_cx_ptr = {
+            let mut task_inner = task.acquire_inner_lock();
+            let ptr = &mut task_inner.task_cx as *mut TaskContext;
+            task_inner.task_status = TaskStatus::Ready;
+            ptr
+        };
 
-        add_task(task);
+        // 【关键修复】不直接add_task，而是设置pending_task
+        // 这样任务上下文会在__switch时保存，之后才被加入就绪队列
+        // 避免其他CPU在上下文保存前就偷取任务导致竞争
+        {
+            let mut processor = processor::PROCESSORS[cpu_id].lock();
+            processor.set_pending(task);
+        }
+        
         schedule(task_cx_ptr);
+        
+        // Debug: check ra after resuming from schedule
+        let ra_after: usize;
+        unsafe { core::arch::asm!("mv {}, ra", out(reg) ra_after); }
+        if ra_after == 0 {
+            panic!("[CPU {}] suspend_current_and_run_next: ra=0 after schedule()!", cpu_id);
+        }
     }
 }
 
 pub fn block_current_and_run_next() {
-    log::info!("[block] Enter. Disabling interrupts...");
     let _guard = InterruptGuard::new();
-    log::info!("[block] Interrupts disabled.");
+    let cpu_id = processor::current_cpu_id();
     
     let task = take_current_task().unwrap();
-    log::info!("[block] Current task taken. Pid: {}", task.pid.0);
     
-    let mut task_inner = task.acquire_inner_lock();
-    let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
-    task_inner.task_status = TaskStatus::Interruptible;
-    drop(task_inner);
-    log::info!("[block] Task status set to Interruptible.");
-
-    log::info!("[block] Calling sleep_interruptible...");
-    sleep_interruptible(task);
-    log::info!("[block] sleep_interruptible returned. Calling schedule...");
-
+    let task_cx_ptr = {
+        let mut task_inner = task.acquire_inner_lock();
+        let ptr = &mut task_inner.task_cx as *mut TaskContext;
+        task_inner.task_status = TaskStatus::Interruptible;
+        ptr
+    };
+    
+    // 【关键修复】不直接 sleep_interruptible，而是设置 pending_task
+    // 这样任务上下文会在 __switch 时保存，之后才被加入睡眠队列
+    // 避免其他CPU在上下文保存前就唤醒并运行任务导致竞争
+    {
+        let mut processor = processor::PROCESSORS[cpu_id].lock();
+        processor.set_pending(task);
+    }
+    
+    // 在 schedule 之后, run_tasks 会检测到 pending_task
+    // 但 block 不是加入 ready 队列，而是加入 interruptible 队列
+    // 所以需要标记这个 task 是要 block 而不是 ready
     schedule(task_cx_ptr);
-    log::info!("[block] schedule returned (Resumed).");
 }
 
 pub fn do_exit(task: Arc<TaskControlBlock>, exit_code: u32) {
@@ -264,5 +286,21 @@ lazy_static! {
 }
 
 pub fn add_initproc() {
+    println!("[add_initproc] Entering function...");
+    println!("[add_initproc] About to access INITPROC lazy_static...");
+    let initproc_pid = INITPROC.pid.0;
+    println!("[add_initproc] INITPROC pid={}", initproc_pid);
     add_task(INITPROC.clone());
+    println!("[add_initproc] INITPROC added successfully");
+}
+
+/// 初始化任务子系统的全局数据结构
+/// 必须在多核启动前由 BSP 调用，以避免多核竞争初始化 lazy_static 导致的死锁
+pub fn init_task_subsystem() {
+    use manager::{TASK_MANAGERS, TIMEOUT_WAITQUEUE};
+    use processor::PROCESSORS;
+    // 触发 lazy_static 初始化（只读访问即可）
+    let _ = PROCESSORS.len();
+    let _ = TASK_MANAGERS.len();
+    let _ = TIMEOUT_WAITQUEUE.lock();
 }

@@ -43,6 +43,8 @@ mod utils;
 use crate::config::DISK_IMAGE_BASE;
 use crate::hal::bootstrap_init;
 use crate::hal::machine_init;
+#[cfg(feature = "riscv")]
+use crate::hal::arch::riscv::{ap_init, ap_finish_init};
 #[cfg(feature = "board_2k1000")]
 core::arch::global_asm!(include_str!("hal/arch/loongarch64/entry.asm"));
 #[cfg(feature = "riscv")]
@@ -135,12 +137,19 @@ pub fn rust_main(hart_id: usize) -> ! {
         riscv::register::sstatus::clear_sie();
     }
 
-    // 中断向量表设置 (stvec) 必须每个核都做
-    machine_init(); 
-
     // 1. 判断是否为 BSP (原子操作 CAS)
     // 只有第一个执行这行代码的核心会得到 is_bsp = true
     let is_bsp = !BOOT_FLAG.swap(true, Ordering::SeqCst);
+
+    // ⚠️ 关键修复：BSP 和 AP 的初始化路径分离
+    // BSP: 完整初始化（trap vector + timer interrupt）
+    // AP: 只设置 trap vector，不启用 timer interrupt（避免在初始化完成前触发中断）
+    #[cfg(feature = "riscv")]
+    if is_bsp {
+        machine_init();  // BSP: 设置 trap vector 并启用 timer interrupt
+    } else {
+        ap_init();       // AP: 只设置 trap vector，不启用 timer interrupt
+    }
 
     // ⚠️ 注意：在锁初始化之前，尽量不要多核同时 Println，否则还是会乱。
     // 这里我们先不打印，等 Console 初始化好后再打印。
@@ -188,9 +197,9 @@ pub fn rust_main(hart_id: usize) -> ! {
             println!("[Debug] fs::flush_preload() done.");
         }
 
-        println!("[kernel] Loading initproc...");
+        println!("[kernel] Loading initproc... (before call)");
         task::add_initproc();
-        println!("[kernel] Initproc loaded!");
+        println!("[kernel] Initproc loaded! (after call)");
 
         // ------------------------------------------
         //         唤醒从核 (Secondary Harts)
@@ -218,6 +227,11 @@ pub fn rust_main(hart_id: usize) -> ! {
             }
         }
 
+        // ⚠️ 关键修复：强制初始化所有 lazy_static 全局变量
+        // 在 AP 启动前完成初始化，防止多核竞争初始化导致的死锁
+        task::init_task_subsystem();
+        println!("[Boot] Global task structures initialized.");
+
         // 通知从核可以继续执行了
         // Release 保证之前的内存写入（如页表、内核栈初始化）对 Acquire 的从核可见
         AP_CAN_START.store(true, Ordering::Release);
@@ -235,6 +249,15 @@ pub fn rust_main(hart_id: usize) -> ! {
         while !AP_CAN_START.load(Ordering::Acquire) {
             spin_loop(); // CPU 提示，降低功耗
         }
+        
+        // ⚠️ 关键修复：AP 必须激活内核页表！
+        // 否则 AP 的 satp=0（无分页），无法正常执行内核代码
+        mm::KERNEL_SPACE.lock().activate();
+        
+        // ⚠️ 关键修复：AP 在同步屏障后才启用 timer interrupt
+        // 此时 BSP 已完成所有初始化，可以安全启用中断
+        #[cfg(feature = "riscv")]
+        ap_finish_init();
         
         // 此时 BSP 已经初始化完锁和全局资源，可以安全打印了
         println!("[Boot] Hart {} (AP) implies ready and running.", hart_id);

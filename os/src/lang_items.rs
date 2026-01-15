@@ -4,21 +4,25 @@ use core::panic::PanicInfo;
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     if let Some(location) = info.location() {
-        println!(
-            "[kernel] panicked at '{}', {}:{}:{}",
-            info.message(),
+        print!(
+            "[kernel] panicked at {}:{}:{}: ",
             location.file(),
             location.line(),
             location.column()
         );
     } else {
-        println!(
-            "[kernel] panicked at '{}'",
-            info.message()
-        );
+        print!("[kernel] panicked: ");
     }
+
+    if let Some(message) = info.message() {
+        println!("{}", message);
+    } else {
+        println!("(panic message)");
+    }
+
     shutdown()
 }
+
 
 pub trait Bytes<T> {
     fn as_bytes(&self) -> &[u8] {
