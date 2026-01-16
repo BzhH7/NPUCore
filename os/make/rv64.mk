@@ -5,14 +5,14 @@ KERNEL_ELF := target/$(TARGET)/$(MODE)/os
 KERNEL_BIN := $(KERNEL_ELF).bin
 DISASM_TMP := target/$(TARGET)/$(MODE)/asm
 BLK_MODE := virt
-FS_MODE ?= ext4
+FS_MODE ?= fat32
 ROOTFS_IMG_NAME = rootfs-rv.img
 ROOTFS_IMG_DIR := ../fs-img-dir
 CORE_NUM := 1
 LOG := off
-KERNEL_RV := ../kernel-rv
+KERNEL_RV := ../kernel-qemu
 KERNEL_LA := ../kernel-la
-SDCARD_RV := ../../sdcard-rv.img
+SDCARD_RV := ../sdcard.img
 SDCARD_LA := ../sdcard-la.img
 
 ifeq ($(BOARD), vf2)
@@ -62,11 +62,12 @@ DISASM ?= -x
 all: fs-img build
 
 mv:
-	cp -f $(KERNEL_BIN) ../kernel-rv
+	cp -f $(KERNEL_BIN) ../kernel-qemu
 
 build: env $(KERNEL_BIN) mv
 
 env:
+	rustup override set nightly-2024-02-03
 	(rustup target list | grep "riscv64gc-unknown-none-elf (installed)") || rustup target add $(TARGET)
 	rustup target add $(TARGET)
 	rustup component add rust-src
@@ -74,6 +75,7 @@ env:
 
 # build all user programs
 user:
+	@cd ../user && make clean || true
 	@cd ../user && make rust-user BOARD=$(BOARD) MODE=$(MODE)
 
 $(KERNEL_BIN): kernel
@@ -124,14 +126,14 @@ gdb:
 	-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
 	-m 1024 \
 	-smp threads=$(CORE_NUM) -S -s | tee qemu.log
-
+#ROOTFS_IMG
 runsimple:
 	@qemu-system-riscv64 \
 		-machine virt \
 		-nographic \
 		-bios $(BOOTLOADER) \
 		-device loader,file=$(KERNEL_BIN),addr=$(KERNEL_ENTRY_PA) \
-		-drive file=$(ROOTFS_IMG),if=none,format=raw,id=x0 \
+		-drive file=$(SDCARD_RV),if=none,format=raw,id=x0 \
 		-m 1024 \
         -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
 		-smp threads=$(CORE_NUM)
@@ -142,7 +144,7 @@ comp:
 		-kernel $(KERNEL_RV) \
 		-m 1024 \
 		-nographic \
-		-smp threads=$(CORE_NUM) \
+		-smp 1 \
 		-bios default \
 		-drive file=$(SDCARD_RV),if=none,format=raw,id=x0 \
 		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
@@ -155,7 +157,7 @@ comp-gdb:
         -kernel $(KERNEL_RV) \
         -m 1024 \
         -nographic \
-        -smp threads=$(CORE_NUM) \
+        -smp 1 \
         -bios default \
         -drive file=$(SDCARD_RV),if=none,format=raw,id=x0 \
         -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
@@ -163,5 +165,18 @@ comp-gdb:
         -rtc base=utc \
         -S \
         -s
+
+test:
+	@qemu-system-riscv64 \
+		-machine virt \
+		-kernel $(KERNEL_RV) \
+		-m 128M \
+		-nographic \
+		-smp 4 \
+		-bios default \
+		-drive file=$(SDCARD_RV),if=none,format=raw,id=x0  \
+		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
+		-device virtio-net-device,netdev=net \
+		-netdev user,id=net 
 
 .PHONY: user

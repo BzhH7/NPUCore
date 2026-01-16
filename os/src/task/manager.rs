@@ -10,7 +10,8 @@ use crate::config::SYSTEM_TASK_LIMIT;
 use alloc::vec::Vec;
 
 use crate::timer::TimeSpec;
-use crate::config::MAX_CPU_NUM; // 引入CPU数量配置
+use crate::config::MAX_CPU_NUM;
+use crate::utils::InterruptGuard;
 
 use super::{current_task, TaskControlBlock};
 use alloc::collections::{BinaryHeap, VecDeque};
@@ -18,31 +19,6 @@ use alloc::sync::{Arc, Weak};
 use lazy_static::*;
 use spin::Mutex;
 use crate::task::processor::current_cpu_id;
-
-#[cfg(feature = "riscv")]
-use riscv::register::sstatus;
-
-// === 辅助函数：关中断并返回之前的状态 ===
-fn push_off() -> bool {
-    #[cfg(feature = "riscv")]
-    unsafe {
-        let sie = sstatus::read().sie();
-        if sie {
-            sstatus::clear_sie();
-        }
-        sie
-    }
-    #[cfg(not(feature = "riscv"))]
-    true // 其他架构暂时默认处理，需根据实际情况修改
-}
-
-// === 辅助函数：恢复中断 ===
-fn pop_off(interrupts: bool) {
-    #[cfg(feature = "riscv")]
-    if interrupts {
-        unsafe { sstatus::set_sie() };
-    }
-}
 
 #[cfg(feature = "oom_handler")]
 /// 任务的激活状态跟踪器
@@ -297,25 +273,25 @@ lazy_static! {
 
 /// 添加一个任务到任务管理器
 pub fn add_task(task: Arc<TaskControlBlock>) {
-    let old_sie = push_off(); // 关中断
-    let cpu_id = current_cpu_id(); // 获取当前核心ID
+    let _guard = InterruptGuard::new();
+    let cpu_id = current_cpu_id();
     TASK_MANAGERS[cpu_id].lock().add(task);
-    pop_off(old_sie); // 恢复中断
 }
 
 /// 从任务管理器中取出一个任务
 pub fn fetch_task() -> Option<Arc<TaskControlBlock>> {
-    let old_sie = push_off(); // 关中断
+    let _guard = InterruptGuard::new();
     let cpu_id = current_cpu_id();
     
     // 1. 尝试从本地获取
     let task = TASK_MANAGERS[cpu_id].lock().fetch();
     if task.is_some() {
-        pop_off(old_sie); // 恢复中断
         return task;
     }
 
-    // 2. Work Stealing: 遍历其他核心
+    // 2. Work Stealing: DISABLED FOR DEBUGGING
+    // 【调试】暂时禁用工作窃取以排查问题
+    /*
     for i in 0..MAX_CPU_NUM {
         if i == cpu_id {
             continue;
@@ -328,49 +304,35 @@ pub fn fetch_task() -> Option<Arc<TaskControlBlock>> {
                 #[cfg(feature = "oom_handler")]
                 other_manager.active_tracker.mark_active(task.pid.0);
                 
-                drop(other_manager); // 先释放锁
-                pop_off(old_sie); // 再恢复中断
-                
-                log::trace!("[cpu {}] stole task {} from cpu {}", cpu_id, task.pid.0, i);
                 return Some(task);
             }
         }
     }
+    */
     
-    pop_off(old_sie); // 恢复中断
     None
 }
 
 #[cfg(feature = "oom_handler")]
 pub fn do_oom(req: usize) -> Result<(), ()> {
-    let old_sie = push_off(); // OOM 处理也需要关中断
+    let _guard = InterruptGuard::new();
     let mut total_released = 0;
 
     // 遍历所有的 CPU 任务管理器
     for manager_lock in TASK_MANAGERS.iter() {
         // 如果已经满足需求，直接返回
         if total_released >= req {
-            pop_off(old_sie);
             return Ok(());
         }
 
-        // 尝试获取锁。为了避免死锁和长时间阻塞，这里推荐使用 try_lock。
-        // 如果某个核正在忙（锁被占用），OOM 这种紧急情况下也许可以跳过它，或者阻塞等待。
-        // 这里使用 lock() 确保尽最大努力释放内存，因为 OOM 通常意味着如果不解决就要 crash。
         let mut manager = manager_lock.lock();
-        
-        // 计算还需要释放多少
         let needed = req - total_released;
-        
-        // 在该核心上执行清理
         total_released += manager.do_oom_local(needed);
     }
 
-    pop_off(old_sie);
     if total_released >= req {
         Ok(())
     } else {
-        // 遍历了所有核还是不够，说明系统内存真的耗尽了
         log::error!("OOM failed: required {}, released {}", req, total_released);
         Err(())
     }
@@ -385,40 +347,30 @@ pub fn do_oom(_req: usize) -> Result<(), ()> {
 /// # 警告
 /// 这里的`pid`是唯一的，用户会将其视为`tid`
 pub fn find_task_by_pid(pid: usize) -> Option<Arc<TaskControlBlock>> {
-    // 注意：这个操作可能比较慢，因为它遍历所有核。
-    // 我们也需要保护它，虽然 find 操作通常是只读，但队列操作不是原子的。
-    // 但更重要的是防止中断中的死锁。
-    let old_sie = push_off();
+    let _guard = InterruptGuard::new();
 
-    // 1. 检查当前运行的任务 (通常 current_task 是 Per-CPU 的，这里逻辑可能需要适配 processor.rs)
     let current = super::processor::current_task(); 
     if let Some(task) = current {
         if task.pid.0 == pid {
-            pop_off(old_sie);
             return Some(task);
         }
     }
 
-    // 2. 遍历所有 CPU 的管理器查找
     for manager in TASK_MANAGERS.iter() {
         let manager = manager.lock();
         if let Some(task) = manager.find_by_pid(pid) {
-            drop(manager);
-            pop_off(old_sie);
             return Some(task);
         }
     }
-    pop_off(old_sie);
     None
 }
 
 /// 返回线程组ID为`tgid`的任意任务。
 pub fn find_task_by_tgid(tgid: usize) -> Option<Arc<TaskControlBlock>> {
-    let old_sie = push_off();
+    let _guard = InterruptGuard::new();
     let current = super::processor::current_task();
     if let Some(task) = current {
         if task.tgid == tgid {
-            pop_off(old_sie);
             return Some(task);
         }
     }
@@ -426,12 +378,9 @@ pub fn find_task_by_tgid(tgid: usize) -> Option<Arc<TaskControlBlock>> {
     for manager in TASK_MANAGERS.iter() {
         let manager = manager.lock();
         if let Some(task) = manager.find_by_tgid(tgid) {
-            drop(manager);
-            pop_off(old_sie);
             return Some(task);
         }
     }
-    pop_off(old_sie);
     None
 }
 
@@ -442,39 +391,58 @@ wake_interruptible 时直接锁 TASK_MANAGERS[task.last_cpu] 进行唤醒。
 */
 //简单遍历（推荐初期使用） 唤醒时遍历所有核的管理器，找到并唤醒。
 pub fn sleep_interruptible(task: Arc<TaskControlBlock>) {
-    let old_sie = push_off();
+    let _guard = InterruptGuard::new();
     let cpu_id = current_cpu_id();
     log::info!("[sleep_interruptible] Locking TASK_MANAGERS[{}]...", cpu_id);
     TASK_MANAGERS[cpu_id].lock().add_interruptible(task);
     log::info!("[sleep_interruptible] Task added to queue. Unlocked.");
-    pop_off(old_sie);
 }
 
+/// Wake a task from interruptible state.
+/// 
+/// This function searches through all CPU's task managers to find and wake the specified task.
+/// 
+/// # Multi-core Safety
+/// Uses try_lock() to avoid deadlocks when other CPUs have locked their managers.
+/// If a manager is locked by another CPU, we skip it and retry the entire loop.
+/// This is safe because the task can only be in one manager's interruptible queue.
 pub fn wake_interruptible(task: Arc<TaskControlBlock>) {
-    let old_sie = push_off();
-    // 尝试在所有管理器中唤醒
-    for manager in TASK_MANAGERS.iter() {
-        let mut manager = manager.lock();
-        // try_wake_interruptible 会检查任务是否在自己的 interruptible 队列中
-        // 如果在，就移除并加入 ready 队列，返回 Ok
-        if manager.try_wake_interruptible(task.clone()).is_ok() {
-            drop(manager);
-            pop_off(old_sie);
+    let _guard = InterruptGuard::new();
+    
+    // 使用重试循环，避免跨 CPU 死锁
+    loop {
+        let mut all_checked = true;
+        
+        for manager in TASK_MANAGERS.iter() {
+            // 使用 try_lock 避免阻塞等待其他 CPU 的锁
+            if let Some(mut manager) = manager.try_lock() {
+                if manager.try_wake_interruptible(Arc::clone(&task)).is_ok() {
+                    return; // 成功唤醒
+                }
+            } else {
+                // 有锁竞争，标记需要重试
+                all_checked = false;
+            }
+        }
+        
+        // 如果检查了所有 manager 都没找到，说明任务已被唤醒或不在队列中
+        if all_checked {
             return;
         }
+        
+        // 短暂让出 CPU，减少锁竞争
+        core::hint::spin_loop();
     }
-    pop_off(old_sie);
 }
 
 /// 返回就绪队列中的任务数量
 pub fn procs_count() -> u16 {
-    let old_sie = push_off();
+    let _guard = InterruptGuard::new();
     let mut total = 0;
     for manager in TASK_MANAGERS.iter() {
         let manager = manager.lock();
         total += manager.ready_count() + manager.interruptible_count();
     }
-    pop_off(old_sie);
     total
 }
 
@@ -540,7 +508,7 @@ impl WaitQueue {
         // 但 TASK_MANAGERS 的锁是在内部获取的。
         // 为了安全起见，我们在操作全局 TASK_MANAGERS 时关中断。
 
-        let old_sie = push_off();
+        let _guard = InterruptGuard::new();
         let cpu_id = current_cpu_id();
 
         // 获取全局任务管理器
@@ -606,7 +574,6 @@ impl WaitQueue {
                 None => continue,
             }
         }
-        pop_off(old_sie);
         cnt
     }
 }
@@ -748,25 +715,15 @@ lazy_static! {
 /// 这个函数会将一个`task`添加到全局超时等待队列中，但是不会阻塞它
 /// 如果想要阻塞一个任务，使用`block_current_and_run_next()`函数
 pub fn wait_with_timeout(task: Weak<TaskControlBlock>, timeout: TimeSpec) {
-    let old_sie = push_off(); // 关中断保护全局锁
-    // 调试日志：尝试获取锁
-    // log::info!("[wait_with_timeout] Trying to lock TIMEOUT_WAITQUEUE...");
+    let _guard = InterruptGuard::new();
     let mut queue = TIMEOUT_WAITQUEUE.lock();
-    // log::info!("[wait_with_timeout] Locked TIMEOUT_WAITQUEUE. Adding task...");
-    
     queue.add_task(task, timeout);
-    
-    // 锁会在 queue 离开作用域时释放，打印日志确认
-    drop(queue); 
-    // log::info!("[wait_with_timeout] Unlocked TIMEOUT_WAITQUEUE.");
-    pop_off(old_sie);
 }
 
 /// 唤醒全局超时等待队列中所有已超时的任务
 pub fn do_wake_expired() {
-    let old_sie = push_off(); // 关中断保护全局锁
+    let _guard = InterruptGuard::new();
     TIMEOUT_WAITQUEUE
         .lock()
         .wake_expired(crate::timer::TimeSpec::now());
-    pop_off(old_sie);
 }

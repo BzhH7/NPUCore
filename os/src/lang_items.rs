@@ -3,27 +3,26 @@ use core::panic::PanicInfo;
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    match info.location() {
-        Some(location) => {
-            println!(
-                "[kernel] panicked at '{}', {}:{}:{}",
-                info.message(),
-                location.file(),
-                location.line(),
-                location.column()
-            );
-        }
-        None => println!("[kernel] panicked at '{}'", info.message()),
+    if let Some(location) = info.location() {
+        print!(
+            "[kernel] panicked at {}:{}:{}: ",
+            location.file(),
+            location.line(),
+            location.column()
+        );
+    } else {
+        print!("[kernel] panicked: ");
     }
+
+    if let Some(message) = info.message() {
+        println!("{}", message);
+    } else {
+        println!("(panic message)");
+    }
+
     shutdown()
 }
 
-#[macro_export]
-macro_rules! color_text {
-    ($text:expr, $color:expr) => {{
-        format_args!("\x1b[{}m{}\x1b[0m", $color, $text)
-    }};
-}
 
 pub trait Bytes<T> {
     fn as_bytes(&self) -> &[u8] {

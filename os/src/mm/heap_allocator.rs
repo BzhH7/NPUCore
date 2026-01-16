@@ -1,26 +1,25 @@
+//! Kernel heap allocator
+//!
+//! Uses buddy system allocator for dynamic memory allocation in kernel space.
+
 use crate::hal::KERNEL_HEAP_SIZE;
 use buddy_system_allocator::LockedHeap;
 
 #[global_allocator]
-/// 全局堆分配器
 static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::empty();
 
-// 标记为全局分配错误处理器
 #[alloc_error_handler]
-/// 分配错误处理
 pub fn handle_alloc_error(layout: core::alloc::Layout) -> ! {
     panic!("Heap allocation error, layout = {:?}", layout);
 }
 
-/// 全局堆内存空间
 static mut HEAP_SPACE: [u8; KERNEL_HEAP_SIZE] = [0; KERNEL_HEAP_SIZE];
 
-/// 初始化用于内核加载开始时的堆
+/// Initialize kernel heap allocator
 pub fn init_heap() {
     unsafe {
         HEAP_ALLOCATOR
             .lock()
-            // 起始地址和大小
             .init(HEAP_SPACE.as_ptr() as usize, KERNEL_HEAP_SIZE);
     }
 }

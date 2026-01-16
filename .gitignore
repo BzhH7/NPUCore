@@ -24,6 +24,10 @@ sdcard-la.img
 
 sdcard-rv.img
 
+*img
+
+kernel.bin
+
 uImage
 
 util/qemu-2k1000/tmp/qemu-2k1000-static.20240526.tar.xz

@@ -1,4 +1,4 @@
-ARCHS = rv64 la64
+ARCHS = rv64
 CURR_ARCH ?= rv64
 FS_MODE ?= ext4
 BLK_MODE ?= virt
@@ -54,6 +54,9 @@ la64-run:
 
 comp:
 	make -f make/$(CURR_ARCH).mk comp
+
+test:
+	make -f make/$(CURR_ARCH).mk test
 
 clean:
 	for arch in $(ARCHS); do \

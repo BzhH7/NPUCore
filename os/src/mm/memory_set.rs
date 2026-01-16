@@ -682,21 +682,24 @@ impl<T: PageTable> MemorySet<T> {
             }
         }
         match (program_break, load_addr) {
-            (Some(program_break), Some(load_addr)) => Ok((
-                program_break,
-                ELFInfo {
-                    entry: elf.header.pt2.entry_point() as usize + bias,
-                    interp_entry,
-                    base: if let Some(interp_base) = interp_base {
-                        interp_base
-                    } else {
-                        bias
+            (Some(program_break), Some(load_addr)) => {
+                let raw_entry = elf.header.pt2.entry_point() as usize;
+                Ok((
+                    program_break,
+                    ELFInfo {
+                        entry: raw_entry + bias,
+                        interp_entry,
+                        base: if let Some(interp_base) = interp_base {
+                            interp_base
+                        } else {
+                            bias
+                        },
+                        phnum: elf.header.pt2.ph_count() as usize,
+                        phent: elf.header.pt2.ph_entry_size() as usize,
+                        phdr: load_addr + elf.header.pt2.ph_offset() as usize,
                     },
-                    phnum: elf.header.pt2.ph_count() as usize,
-                    phent: elf.header.pt2.ph_entry_size() as usize,
-                    phdr: load_addr + elf.header.pt2.ph_offset() as usize,
-                },
-            )),
+                ))
+            }
             _ => Err(ENOEXEC),
         }
     }

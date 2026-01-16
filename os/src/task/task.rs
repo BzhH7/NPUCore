@@ -1,3 +1,12 @@
+//! Task control block and task management
+//!
+//! This module defines:
+//! - Task control block (TCB) structure
+//! - Task state and status management
+//! - Process and thread creation
+//! - Signal handling infrastructure
+//! - Resource tracking (files, sockets, memory)
+
 use super::manager::TASK_MANAGERS;
 use super::pid::RecycleAllocator;
 use super::signal::*;
@@ -26,126 +35,167 @@ use log::trace;
 use spin::{Mutex, MutexGuard};
 use crate::task::processor::current_cpu_id;
 
+/// Task filesystem state
 #[derive(Clone)]
-/// 任务的文件系统状态
 pub struct FsStatus {
-    /// 当前工作目录的文件描述符
+    /// Current working directory file descriptor
     pub working_inode: Arc<FileDescriptor>,
 }
 
-/// 任务控制块
+/// Task control block (TCB)
+///
+/// Contains all information about a task including:
+/// - Process/thread identifiers
+/// - Kernel and user stacks
+/// - Memory space
+/// - File descriptors
+/// - Signal handling
 pub struct TaskControlBlock {
-    // 不可变字段
-    /// 进程ID
+    // Immutable fields
+    /// Process ID
     pub pid: PidHandle,
-    /// 线程ID
+    /// Thread ID
     pub tid: usize,
-    /// 线程组ID
+    /// Thread group ID (process ID)
     pub tgid: usize,
-    /// 内核栈
+    /// Kernel stack
     pub kstack: KernelStack,
-    /// 用户栈基址
+    /// User stack base address
     pub ustack_base: usize,
-    /// 退出信号
+    /// Exit signal
     pub exit_signal: Signals,
-    // 可变字段
-    /// 任务内部状态，使用互斥锁保护
+
+    // Mutable fields (protected by mutex)
+    /// Task inner state
     inner: Mutex<TaskControlBlockInner>,
-    // 可共享&可变字段
-    /// 可执行文件描述符
+
+    // Shared mutable fields
+    /// Executable file descriptor
     pub exe: Arc<Mutex<FileDescriptor>>,
-    /// 线程ID分配器
+    /// Thread ID allocator
     pub tid_allocator: Arc<Mutex<RecycleAllocator>>,
-    /// 文件描述符表
+    /// File descriptor table
     pub files: Arc<Mutex<FdTable>>,
-    /// Socket表
+    /// Socket table
     pub socket_table: Arc<Mutex<SocketTable>>,
-    /// 文件系统状态
+    /// Filesystem state
     pub fs: Arc<Mutex<FsStatus>>,
-    /// 虚拟内存空间
+    /// Virtual memory space
     pub vm: Arc<Mutex<MemorySet<PageTableImpl>>>,
-    /// 信号处理函数表
+    /// Signal handler table
     pub sighand: Arc<Mutex<Vec<Option<Box<SigAction>>>>>,
-    /// 快速用户空间互斥锁
+    /// Futex (fast userspace mutex)
     pub futex: Arc<Mutex<Futex>>,
 }
 
-/// 任务控制块内部状态
+/// Timer type enumeration for interval timer operations
+/// 
+/// POSIX defines three types of interval timers:
+/// - Real: Wall clock time (SIGALRM)
+/// - Virtual: User CPU time only (SIGVTALRM)
+/// - Prof: User + System CPU time (SIGPROF)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+pub enum TimerKind {
+    /// Real-time timer (ITIMER_REAL) - decrements in real time
+    Real = 0,
+    /// Virtual timer (ITIMER_VIRTUAL) - decrements during user execution
+    Virtual = 1,
+    /// Profiling timer (ITIMER_PROF) - decrements during user + kernel execution
+    Prof = 2,
+}
+
+impl TimerKind {
+    /// Get the signal to deliver when this timer expires
+    #[inline]
+    pub const fn expiry_signal(&self) -> Signals {
+        match self {
+            Self::Real => Signals::SIGALRM,
+            Self::Virtual => Signals::SIGVTALRM,
+            Self::Prof => Signals::SIGPROF,
+        }
+    }
+    
+    /// Get the timer array index
+    #[inline]
+    pub const fn index(&self) -> usize {
+        *self as usize
+    }
+}
+
+/// Task control block inner state
 pub struct TaskControlBlockInner {
-    /// 信号掩码
+    /// Signal mask
     pub sigmask: Signals,
-    /// 待处理信号
+    /// Pending signals
     pub sigpending: Signals,
-    /// 陷阱上下文的物理页号
+    /// Trap context physical page number
     pub trap_cx_ppn: PhysPageNum,
-    /// 任务上下文
+    /// Task context
     pub task_cx: TaskContext,
-    /// 任务状态
+    /// Task status
     pub task_status: TaskStatus,
-    /// 父进程
+    /// Parent task
     pub parent: Option<Weak<TaskControlBlock>>,
-    /// 子进程
+    /// Child tasks
     pub children: Vec<Arc<TaskControlBlock>>,
-    /// 退出码
+    /// Exit code
     pub exit_code: u32,
-    /// 用于清理子进程的线程ID
+    /// Clear child TID address for futex wake
     pub clear_child_tid: usize,
-    /// 鲁棒列表，用于管理鲁棒互斥锁
+    /// Robust mutex list
     pub robust_list: RobustList,
-    /// 堆底
+    /// Heap bottom address
     pub heap_bottom: usize,
-    /// 堆页表
+    /// Heap page table
     pub heap_pt: usize,
-    /// 进程组ID
+    /// Process group ID
     pub pgid: usize,
-    /// 资源使用情况
+    /// Resource usage statistics
     pub rusage: Rusage,
-    /// 任务的时钟信息
+    /// Process clock information
     pub clock: ProcClock,
-    /// 定时器
+    /// Timers
     pub timer: [ITimerVal; 3],
 }
 
+/// Robust mutex list
+///
+/// Used for managing robust mutexes that automatically release
+/// when the holder thread dies
 #[derive(Clone, Copy, Debug)]
-/// 表示任务的鲁棒列表
-/// 用于管理鲁棒互斥锁
 pub struct RobustList {
-    /// 链表头
+    /// List head address
     pub head: usize,
-    /// 链表长度
+    /// List length
     pub len: usize,
 }
 
 impl RobustList {
-    // from strace
-    // 默认的链表头大小
+    /// Default head size (from strace)
     pub const HEAD_SIZE: usize = 24;
 }
 
 impl Default for RobustList {
-    /// 初始化方法
     fn default() -> Self {
         Self {
-            // 链表头
             head: 0,
-            // 链表长度
             len: Self::HEAD_SIZE,
         }
     }
 }
 
+/// Process clock tracking
 #[repr(C)]
-/// 进程时钟
-/// 表示任务的时钟信息
 pub struct ProcClock {
-    /// 上次进入用户态的时间
+    /// Last time entered user mode
     last_enter_u_mode: TimeVal,
-    /// 上次进入内核态的时间
+    /// Last time entered kernel mode
     last_enter_s_mode: TimeVal,
 }
 
 impl ProcClock {
-    /// 构造函数
+    /// Create a new process clock
     pub fn new() -> Self {
         // 获取当前时间
         let now = TimeVal::now();
@@ -245,59 +295,79 @@ impl TaskControlBlockInner {
         // 更新用户CPU时间
         self.rusage.ru_utime = self.rusage.ru_utime + diff;
         // 更新虚拟定时器
-        self.update_itimer_virtual_if_exists(diff);
+        self.tick_interval_timer(TimerKind::Virtual, diff);
         // 更新性能分析定时器
-        self.update_itimer_prof_if_exists(diff);
+        self.tick_interval_timer(TimerKind::Prof, diff);
     }
     /// 在离开陷阱时更新进程时间
     pub fn update_process_times_leave_trap(&mut self, trap_cause: TrapImpl) {
         let now = TimeVal::now();
-        self.update_itimer_real_if_exists(now - self.clock.last_enter_u_mode);
+        self.tick_interval_timer(TimerKind::Real, now - self.clock.last_enter_u_mode);
         if trap_cause.is_timer() {
             let diff = now - self.clock.last_enter_s_mode;
             self.rusage.ru_stime = self.rusage.ru_stime + diff;
-            self.update_itimer_prof_if_exists(diff);
+            self.tick_interval_timer(TimerKind::Prof, diff);
         }
         self.clock.last_enter_u_mode = now;
     }
-    /// 更新实时定时器
+    
+    /// Generic interval timer tick handler
+    ///
+    /// Decrements the specified timer by the given time delta. If the timer
+    /// expires (reaches zero), delivers the appropriate signal and reloads
+    /// from the interval value.
+    ///
+    /// # Arguments
+    /// * `kind` - Which timer to update (Real, Virtual, or Prof)
+    /// * `delta` - Time elapsed since last tick
+    ///
+    /// # Timer Behavior
+    /// - Timer only ticks if `it_value` is non-zero
+    /// - On expiry, the associated signal is queued
+    /// - If `it_interval` is non-zero, timer auto-reloads; otherwise it stops
+    pub fn tick_interval_timer(&mut self, kind: TimerKind, delta: TimeVal) {
+        let idx = kind.index();
+        let timer = &mut self.timer[idx];
+        
+        // Only process active timers
+        if timer.it_value.is_zero() {
+            return;
+        }
+        
+        // Decrement timer value
+        timer.it_value = timer.it_value - delta;
+        
+        // Check for expiration
+        if timer.it_value.is_zero() {
+            // Queue the expiry signal
+            self.sigpending.insert(kind.expiry_signal());
+            // Reload from interval (may be zero for one-shot timers)
+            timer.it_value = timer.it_interval;
+        }
+    }
+    
+    /// Update real-time timer (ITIMER_REAL)
+    /// 
+    /// Wrapper for backward compatibility - delegates to generic handler
+    #[inline]
     pub fn update_itimer_real_if_exists(&mut self, diff: TimeVal) {
-        // 如果当前定时器不为0
-        if !self.timer[0].it_value.is_zero() {
-            // 更新定时器
-            self.timer[0].it_value = self.timer[0].it_value - diff;
-            // 如果定时器为0
-            if self.timer[0].it_value.is_zero() {
-                // 添加信号
-                self.add_signal(Signals::SIGALRM);
-                // 重置定时器
-                self.timer[0].it_value = self.timer[0].it_interval;
-            }
-        }
+        self.tick_interval_timer(TimerKind::Real, diff);
     }
-    /// 更新虚拟定时器
-    /// 与上面的更新实时定时器类似
-    /// 但是发送的信号是SIGVTALRM
+    
+    /// Update virtual timer (ITIMER_VIRTUAL)
+    /// 
+    /// Wrapper for backward compatibility - delegates to generic handler
+    #[inline]
     pub fn update_itimer_virtual_if_exists(&mut self, diff: TimeVal) {
-        if !self.timer[1].it_value.is_zero() {
-            self.timer[1].it_value = self.timer[1].it_value - diff;
-            if self.timer[1].it_value.is_zero() {
-                self.add_signal(Signals::SIGVTALRM);
-                self.timer[1].it_value = self.timer[1].it_interval;
-            }
-        }
+        self.tick_interval_timer(TimerKind::Virtual, diff);
     }
-    /// 更新性能分析定时器
-    /// 与上面的更新实时定时器类似
-    /// 但是发送的信号是SIGPROF
+    
+    /// Update profiling timer (ITIMER_PROF)
+    /// 
+    /// Wrapper for backward compatibility - delegates to generic handler
+    #[inline]
     pub fn update_itimer_prof_if_exists(&mut self, diff: TimeVal) {
-        if !self.timer[2].it_value.is_zero() {
-            self.timer[2].it_value = self.timer[2].it_value - diff;
-            if self.timer[2].it_value.is_zero() {
-                self.add_signal(Signals::SIGPROF);
-                self.timer[2].it_value = self.timer[2].it_interval;
-            }
-        }
+        self.tick_interval_timer(TimerKind::Prof, diff);
     }
 }
 

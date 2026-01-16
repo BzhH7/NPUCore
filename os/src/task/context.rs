@@ -1,23 +1,29 @@
-/*
-    此文件用于定义任务上下文结构体 TaskContext
-    TaskContext 结构体包含了任务的上下文信息，包括返回地址 ra、栈指针 sp 和通用寄存器 s
-    内容与RISCV版本相同，无需修改
-*/
+//! Task context for context switching
+//!
+//! Defines the TaskContext structure that stores the minimal CPU state
+//! needed for task switching, including return address, stack pointer,
+//! and callee-saved registers.
+
 use crate::hal::trap_return;
 
+/// Task context for context switching
+///
+/// Contains the minimal CPU state needed to resume task execution:
+/// - Return address (ra): where to jump when switching to this task
+/// - Stack pointer (sp): kernel stack pointer
+/// - Saved registers (s0-s11): callee-saved registers
 #[repr(C)]
-/// 任务上下文
 pub struct TaskContext {
-    // 返回地址
-    ra: usize,
-    // 栈指针
-    sp: usize,
-    // 通用寄存器
+    /// Return address
+    pub ra: usize,
+    /// Stack pointer
+    pub sp: usize,
+    /// Callee-saved registers (s0-s11)
     s: [usize; 12],
 }
 
 impl TaskContext {
-    // 空初始化
+    /// Create a zero-initialized task context
     pub fn zero_init() -> Self {
         Self {
             ra: 0,
@@ -25,7 +31,11 @@ impl TaskContext {
             s: [0; 12],
         }
     }
-    // 从指定栈指针和返回地址初始化
+
+    /// Create a task context that returns to trap handler
+    ///
+    /// # Arguments
+    /// * `kstack_ptr` - Kernel stack pointer
     pub fn goto_trap_return(kstack_ptr: usize) -> Self {
         Self {
             ra: trap_return as usize,

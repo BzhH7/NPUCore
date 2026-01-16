@@ -1,16 +1,29 @@
 use super::exit;
+use core::panic::PanicInfo;
 
 #[panic_handler]
-fn panic_handler(panic_info: &core::panic::PanicInfo) -> ! {
-    if let Some(location) = panic_info.location() {
+fn panic(info: &PanicInfo) -> ! {
+    let msg_str = match info.message() {
+        Some(msg) => match msg.as_str() {
+            Some(s) => s,
+            None => "(panic message)",
+        },
+        None => "(panic message)",
+    };
+
+    if let Some(location) = info.location() {
         println!(
-            "Panicked at {}:{}, {}",
+            "[kernel] panicked at {}:{}:{}: {}",
             location.file(),
             location.line(),
-            panic_info.message()
+            location.column(),
+            msg_str
         );
     } else {
-        println!("Panicked: {}", panic_info.message());
+        println!(
+            "[kernel] panicked: {}",
+            msg_str
+        );
     }
 
     exit(-1);

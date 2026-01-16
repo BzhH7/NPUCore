@@ -1,3 +1,19 @@
+//! Process Management Syscalls
+//!
+//! This module implements process-related system calls including:
+//! - Process lifecycle management (fork, exec, exit, wait)
+//! - Process identification (getpid, getuid, gettid)
+//! - Memory management (mmap, brk, mprotect)
+//! - Signal handling (sigaction, kill, sigreturn)
+//! - Timers and sleeping (nanosleep, clock_gettime)
+//!
+//! # Design Notes
+//!
+//! Process syscalls follow these patterns:
+//! - Acquire task reference via `current_task()`
+//! - Lock ordering: inner lock before vm lock when both needed
+//! - Signal-safe: check for pending signals after blocking operations
+
 use crate::config::{PAGE_SIZE, SYSTEM_TASK_LIMIT, USER_STACK_SIZE};
 use crate::fs::OpenFlags;
 use crate::hal::shutdown;
@@ -24,9 +40,22 @@ use alloc::vec::Vec;
 use core::mem::size_of;
 use log::{debug, error, info, trace, warn};
 use num_enum::FromPrimitive;
+
+/// Initiate system shutdown
+/// 
+/// This syscall triggers a clean shutdown of the system.
+/// All processes are terminated and hardware is powered off.
 pub fn sys_shutdown() -> isize {
     shutdown()
 }
+
+/// Terminate the calling thread
+/// 
+/// # Arguments
+/// * `exit_code` - Exit status (only low 8 bits are used)
+/// 
+/// # Notes
+/// This function does not return - it transfers control to the scheduler.
 pub fn sys_exit(exit_code: u32) -> ! {
     exit_current_and_run_next((exit_code & 0xff) << 8);
 }

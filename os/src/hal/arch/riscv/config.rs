@@ -10,7 +10,7 @@ pub const USER_HEAP_SIZE: usize = PAGE_SIZE * 0x20;
 pub const KERNEL_STACK_SIZE: usize = PAGE_SIZE * 0x10;
 #[cfg(not(feature = "board_fu740"))]
 // pub const KERNEL_HEAP_SIZE: usize = PAGE_SIZE * 0x240;
-pub const KERNEL_HEAP_SIZE: usize = PAGE_SIZE * 0x8000;
+pub const KERNEL_HEAP_SIZE: usize = PAGE_SIZE * 0x800;
 #[cfg(feature = "board_fu740")]
 pub const KERNEL_HEAP_SIZE: usize = PAGE_SIZE * 0x2000;
 #[cfg(feature = "board_cv1811h")]
@@ -42,14 +42,18 @@ pub const DISK_IMAGE_BASE: usize = MEMORY_START + 0x1000_0000;
 pub const SYSTEM_TASK_LIMIT: usize = 128;
 pub const SYSTEM_FD_LIMIT: usize = 256;
 
-pub const BLOCK_SZ: usize = 4096;
+pub const BLOCK_SZ: usize = 512;
 
-pub const BUFFER_CACHE_NUM: usize = 16;
+pub const BUFFER_CACHE_NUM: usize = 128;
 // dummy
 pub const MEMORY_HIGH_BASE: usize = 0x0000_0000_0000_000;
 
+/// Memory disk size for block_mem feature (128MB for RISC-V)
+pub const MEM_DISK_SIZE: usize = 0x1000_0000;
+
 pub use crate::hal::arch::riscv::rv_board::{CLOCK_FREQ, MMIO};
 
+/// Maximum number of CPUs supported (matches boot stack allocation in entry.asm)
 pub const MAX_CPU_NUM: usize = 4;
 
 #[macro_export]
