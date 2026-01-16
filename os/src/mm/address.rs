@@ -1,24 +1,31 @@
+//! Address and page number types
+//!
+//! This module provides abstraction for:
+//! - Physical and virtual addresses
+//! - Physical and virtual page numbers
+//! - Address/page number conversion and manipulation
+
 use crate::config::{PAGE_SIZE, PAGE_SIZE_BITS};
 use core::fmt::{self, Debug, Formatter};
 
+/// Physical address
 #[repr(C)]
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
-/// 物理地址
 pub struct PhysAddr(pub usize);
 
+/// Virtual address
 #[repr(C)]
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
-/// 虚拟地址
 pub struct VirtAddr(pub usize);
 
+/// Physical page number
 #[repr(C)]
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
-/// 物理页号
 pub struct PhysPageNum(pub usize);
 
+/// Virtual page number
 #[repr(C)]
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
-/// 虚拟页号
 pub struct VirtPageNum(pub usize);
 
 /// Debug formatter for VirtAddr
@@ -97,24 +104,22 @@ impl From<VirtPageNum> for usize {
 }
 
 impl VirtAddr {
-    /// 计算地址所在的页号（向下取整）
+    /// Get the page number containing this address (floor)
     pub fn floor(&self) -> VirtPageNum {
-        let a = self.0 / PAGE_SIZE;
-        VirtPageNum(a)
+        VirtPageNum(self.0 / PAGE_SIZE)
     }
-    /// 计算地址所在的页号（向上取整）
+
+    /// Get the page number containing this address (ceil)
     pub fn ceil(&self) -> VirtPageNum {
-        let b = (self.0 - 1 + PAGE_SIZE) / PAGE_SIZE;
-        VirtPageNum(b)
+        VirtPageNum((self.0 - 1 + PAGE_SIZE) / PAGE_SIZE)
     }
-    /// 计算地址在页内的偏移量
+
+    /// Get the offset within the page
     pub fn page_offset(&self) -> usize {
-        {
-            let c = PAGE_SIZE - 1;
-            self.0 & (c)
-        }
+        self.0 & (PAGE_SIZE - 1)
     }
-    /// 检查地址是否页对齐
+
+    /// Check if the address is page-aligned
     pub fn aligned(&self) -> bool {
         self.page_offset() == 0
     }
@@ -137,17 +142,17 @@ impl From<VirtPageNum> for VirtAddr {
 }
 
 impl PhysAddr {
-    /// 计算地址所在的页号（向下取整）
+    /// Get the page number containing this address (floor)
     pub fn floor(&self) -> PhysPageNum {
-        let e = self.0 / PAGE_SIZE;
-        PhysPageNum(e)
+        PhysPageNum(self.0 / PAGE_SIZE)
     }
-    /// 计算地址所在的页号（向上取整）
+
+    /// Get the page number containing this address (ceil)
     pub fn ceil(&self) -> PhysPageNum {
-        let f = (self.0 - 1 + PAGE_SIZE) / PAGE_SIZE;
-        PhysPageNum(f)
+        PhysPageNum((self.0 - 1 + PAGE_SIZE) / PAGE_SIZE)
     }
-    /// 计算地址在页内的偏移量
+
+    /// Get the offset within the page
     pub fn page_offset(&self) -> usize {
         self.0 & (PAGE_SIZE - 1)
     }

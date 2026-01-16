@@ -1,3 +1,14 @@
+//! Filesystem subsystem
+//!
+//! This module provides:
+//! - Virtual filesystem (VFS) abstraction
+//! - FAT32 and EXT4 filesystem support
+//! - File descriptor management
+//! - Directory tree structure
+//! - Device file support (pipe, null, zero, etc.)
+//! - Page cache for file I/O
+//! - Swap file support (optional)
+
 mod cache;
 pub mod dev;
 pub mod directory_tree;
@@ -9,7 +20,6 @@ mod layout;
 pub mod poll;
 #[cfg(feature = "swap")]
 pub mod swap;
-// Xein add this
 pub mod dirent;
 pub mod file_descriptor;
 mod inode;
@@ -40,6 +50,9 @@ pub use file_descriptor::FileDescriptor;
 use lazy_static::*;
 
 lazy_static! {
+    /// Root directory file descriptor
+    ///
+    /// Provides access to the filesystem root directory for all file operations
     pub static ref ROOT_FD: Arc<FileDescriptor> = Arc::new(FileDescriptor::new(
         false,
         false,
@@ -48,6 +61,11 @@ lazy_static! {
             .unwrap()
     ));
 }
+
+/// Flush preloaded binaries to filesystem
+///
+/// Writes initproc and bash binaries from memory to the filesystem
+/// and deallocates the memory used for preloading
 #[allow(unused)]
 pub fn flush_preload() {
     extern "C" {

@@ -15,6 +15,7 @@ pub use loongarch64::{
         get_bad_addr, get_bad_instruction, get_exception_cause, trap_handler, trap_return,
         MachineContext, TrapContext, TrapImpl, UserContext,
     },
+    disable_interrupts, restore_interrupts,
     trap_cx_bottom_from_tid, ustack_bottom_from_tid, KernelStack, BLOCK_SZ,
 };
 #[cfg(feature = "riscv")]
@@ -37,5 +38,7 @@ pub use riscv::{
         context::TrapContext, get_bad_addr, get_bad_instruction, get_exception_cause, trap_handler,
         trap_return, UserContext,
     },
+    disable_interrupts, restore_interrupts, boot_entry_paddr,
+    ap_init, ap_finish_init,
     KernelPageTableImpl, MachineContext, PageTableImpl, TrapImpl,
 };

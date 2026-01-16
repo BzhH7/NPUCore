@@ -46,3 +46,28 @@ pub fn shutdown() -> ! {
     sbi_call(SBI_SHUTDOWN, 0, 0, 0);
     panic!("It should shutdown!");
 }
+
+// ================= 新增：HSM 扩展 (用于多核启动) =================
+
+const SBI_EXT_HSM: usize = 0x48534D;
+const SBI_FID_HART_START: usize = 0;
+
+/// 启动指定的核心
+/// hartid: 目标核 ID
+/// start_addr: 目标核启动后跳转的物理地址
+/// opaque: 传递给目标核的参数 (a1 寄存器)
+pub fn hart_start(hartid: usize, start_addr: usize, opaque: usize) -> usize {
+    let mut ret;
+    unsafe {
+        asm!(
+            "ecall",
+            inlateout("x10") hartid => ret, // a0: 输入 hartid，输出返回值(error code)
+            in("x11") start_addr,           // a1: 输入 start_addr
+            in("x12") opaque,               // a2: 输入 opaque
+            in("x17") SBI_EXT_HSM,          // a7: Extension ID (HSM)
+            in("x16") SBI_FID_HART_START,   // a6: Function ID (hart_start)
+        );
+    }
+    ret
+}
+

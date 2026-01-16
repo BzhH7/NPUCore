@@ -1,33 +1,43 @@
-use crate::hal::{console_flush, console_putchar};
+use crate::hal::{console_flush, console_putchar, disable_interrupts, restore_interrupts};
 use crate::task::current_task;
 use core::fmt::{self, Write};
 use log::{self, Level, LevelFilter, Log, Metadata, Record};
+use spin::Mutex;
 
-// won't require lock, but unlikely to cause problem
+/// Kernel output writer for console
 struct KernelOutput;
 
 impl Write for KernelOutput {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        let mut i = 0;
+        const FLUSH_THRESHOLD: usize = 4;
+        let mut count = 0;
         for c in s.chars() {
             console_putchar(c as usize);
-            i += 1;
-            if i >= 4 {
+            count += 1;
+            if count >= FLUSH_THRESHOLD {
                 console_flush();
-                i = 0;
+                count = 0;
             }
         }
-        if i != 0 {
+        if count != 0 {
             console_flush();
         }
         Ok(())
     }
 }
 
+/// Global stdout with spinlock protection
+static STDOUT: Mutex<KernelOutput> = Mutex::new(KernelOutput);
+
+/// Print formatted output to console with interrupt protection
 pub fn print(args: fmt::Arguments) {
-    KernelOutput.write_fmt(args).unwrap();
+    // Disable interrupts before acquiring lock to prevent deadlock from timer interrupt
+    let interrupts_were_enabled = disable_interrupts();
+    STDOUT.lock().write_fmt(args).unwrap();
+    restore_interrupts(interrupts_were_enabled);
 }
 
+// 下面的宏定义不用动，它们会调用上面的 print 函数
 #[macro_export]
 macro_rules! print {
     ($fmt: literal $(, $($arg: tt)+)?) => {

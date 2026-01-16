@@ -1,8 +1,13 @@
+//! Error codes for system calls
+//!
+//! Defines POSIX-compatible error codes returned by system calls.
+//! Each error code is a negative integer constant.
+
 #![allow(unused)]
 
 use num_enum::TryFromPrimitive;
 
-/// Success
+/// Success (not an error)
 pub const SUCCESS: isize = 0;
 /// Operation not permitted
 pub const EPERM: isize = -1;

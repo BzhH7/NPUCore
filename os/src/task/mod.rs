@@ -1,16 +1,20 @@
 mod context;
+pub mod cfs_scheduler;
 mod elf;
 mod manager;
 pub mod pid;
-mod processor;
+pub mod processor;
 pub mod signal;
-mod task;
+pub mod state_machine;
+pub mod task;
 pub mod threads;
 
 use crate::hal::__switch;
+ use crate::hal::disable_interrupts;
 use crate::{
     fs::{OpenFlags, ROOT_FD},
     mm::translated_refmut,
+    utils::InterruptGuard,
 };
 use alloc::{collections::VecDeque, sync::Arc};
 pub use context::TaskContext;
@@ -29,11 +33,12 @@ pub use processor::{
 };
 pub use signal::*;
 pub use task::{RobustList, Rusage, TaskControlBlock, TaskStatus};
+use self::processor::{PROCESSORS, current_cpu_id};
 
-use self::processor::PROCESSOR;
 #[allow(unused)]
 pub fn try_yield() {
-    let lock = PROCESSOR.lock();
+    let cpu_id = current_cpu_id();
+    let lock = PROCESSORS[cpu_id].lock();
     let mut do_suspend = false;
     if !lock.is_vacant() {
         do_suspend = true;
@@ -43,95 +48,154 @@ pub fn try_yield() {
         suspend_current_and_run_next()
     }
 }
+
 pub fn suspend_current_and_run_next() {
-    // There must be an application running.
-    let task = take_current_task().unwrap();
+    let _guard = InterruptGuard::new();
+    let cpu_id = processor::current_cpu_id();
 
-    // ---- hold current PCB lock
-    let mut task_inner = task.acquire_inner_lock();
-    let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
-    // Change status to Ready
-    task_inner.task_status = TaskStatus::Ready;
-    drop(task_inner);
-    // ---- release current PCB lock
+    if let Some(task) = take_current_task() {
+        let task_cx_ptr = {
+            let mut task_inner = task.acquire_inner_lock();
+            let ptr = &mut task_inner.task_cx as *mut TaskContext;
+            task_inner.task_status = TaskStatus::Ready;
+            ptr
+        };
 
-    // push back to ready queue.
-    add_task(task);
-    // jump to scheduling cycle
-    schedule(task_cx_ptr);
+        // 【关键修复】不直接add_task，而是设置pending_task
+        // 这样任务上下文会在__switch时保存，之后才被加入就绪队列
+        // 避免其他CPU在上下文保存前就偷取任务导致竞争
+        {
+            let mut processor = processor::PROCESSORS[cpu_id].lock();
+            processor.set_pending(task);
+        }
+        
+        schedule(task_cx_ptr);
+        
+        // Debug: check ra after resuming from schedule
+        let ra_after: usize;
+        unsafe { core::arch::asm!("mv {}, ra", out(reg) ra_after); }
+        if ra_after == 0 {
+            panic!("[CPU {}] suspend_current_and_run_next: ra=0 after schedule()!", cpu_id);
+        }
+    }
 }
 
 pub fn block_current_and_run_next() {
-    // There must be an application running.
+    let _guard = InterruptGuard::new();
+    let cpu_id = processor::current_cpu_id();
+    
     let task = take_current_task().unwrap();
-
-    // ---- hold current PCB lock
-    let mut task_inner = task.acquire_inner_lock();
-    let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
-    // Change status to Interruptible
-    task_inner.task_status = TaskStatus::Interruptible;
-    drop(task_inner);
-    // ---- release current PCB lock
-
-    // push to interruptible queue of scheduler, so that it won't be scheduled.
-    sleep_interruptible(task);
-    // jump to scheduling cycle
+    
+    let task_cx_ptr = {
+        let mut task_inner = task.acquire_inner_lock();
+        let ptr = &mut task_inner.task_cx as *mut TaskContext;
+        task_inner.task_status = TaskStatus::Interruptible;
+        ptr
+    };
+    
+    // 【关键修复】不直接 sleep_interruptible，而是设置 pending_task
+    // 这样任务上下文会在 __switch 时保存，之后才被加入睡眠队列
+    // 避免其他CPU在上下文保存前就唤醒并运行任务导致竞争
+    {
+        let mut processor = processor::PROCESSORS[cpu_id].lock();
+        processor.set_pending(task);
+    }
+    
+    // 在 schedule 之后, run_tasks 会检测到 pending_task
+    // 但 block 不是加入 ready 队列，而是加入 interruptible 队列
+    // 所以需要标记这个 task 是要 block 而不是 ready
     schedule(task_cx_ptr);
 }
 
 pub fn do_exit(task: Arc<TaskControlBlock>, exit_code: u32) {
-    // **** hold current PCB lock
-    let mut inner = task.acquire_inner_lock();
-    if !task.exit_signal.is_empty() {
-        if let Some(parent) = inner.parent.as_ref() {
-            let parent_task = parent.upgrade().unwrap(); // this will acquire inner of current task
-            let mut parent_inner = parent_task.acquire_inner_lock();
-            parent_inner.add_signal(task.exit_signal);
-
-            if parent_inner.task_status == TaskStatus::Interruptible {
-                // wake up parent if parent is waiting.
-                parent_inner.task_status = TaskStatus::Ready;
-                drop(parent_inner);
-                // push back to ready queue.
+    // 多核安全重构：避免嵌套锁导致死锁
+    // 策略：分阶段执行，每阶段只持有一把锁
+    
+    // === 阶段1：收集需要的信息并设置基本状态 ===
+    let (need_signal_parent, parent_task_opt, children_to_move, clear_child_tid, user_token) = {
+        let mut inner = task.acquire_inner_lock();
+        
+        // 设置 zombie 状态和 exit_code
+        inner.task_status = TaskStatus::Zombie;
+        inner.exit_code = exit_code;
+        
+        // 收集父任务信息
+        let parent = if !task.exit_signal.is_empty() {
+            inner.parent.as_ref().and_then(|p| p.upgrade())
+        } else {
+            None
+        };
+        
+        // 收集子任务列表（move out）
+        let children: VecDeque<Arc<TaskControlBlock>> = inner.children.drain(..).collect();
+        
+        let clear_tid = inner.clear_child_tid;
+        let token = task.get_user_token();
+        
+        (task.exit_signal, parent, children, clear_tid, token)
+    };
+    // inner lock released here
+    
+    // === 阶段2：通知父任务 ===
+    if !need_signal_parent.is_empty() {
+        if let Some(parent_task) = parent_task_opt {
+            let need_wake = {
+                let mut parent_inner = parent_task.acquire_inner_lock();
+                parent_inner.add_signal(need_signal_parent);
+                
+                if parent_inner.task_status == TaskStatus::Interruptible {
+                    parent_inner.task_status = TaskStatus::Ready;
+                    true
+                } else {
+                    false
+                }
+            };
+            // parent_inner lock released here
+            
+            if need_wake {
                 wake_interruptible(parent_task);
             }
         } else {
             warn!("[do_exit] parent is None");
         }
     }
-    log::trace!(
-        "[do_exit] Trying to exit pid {} with {}",
-        task.pid.0,
-        exit_code
-    );
-    // Change status to Zombie
-    inner.task_status = TaskStatus::Zombie;
-    // Record exit code
-    inner.exit_code = exit_code;
-
-    // move children to initproc
-    if !inner.children.is_empty() {
-        let mut initproc_inner = INITPROC.acquire_inner_lock();
-        while let Some(child) = inner.children.pop() {
-            child.acquire_inner_lock().parent = Some(Arc::downgrade(&INITPROC));
-            initproc_inner.children.push(child);
+    
+    // === 阶段3：将子任务移交给 initproc ===
+    if !children_to_move.is_empty() {
+        // 先更新每个子任务的 parent 指针
+        for child in children_to_move.iter() {
+            let mut child_inner = child.acquire_inner_lock();
+            child_inner.parent = Some(Arc::downgrade(&INITPROC));
         }
-        if initproc_inner.task_status == TaskStatus::Interruptible {
-            // wake up initproc if initproc is waiting.
-            initproc_inner.task_status = TaskStatus::Ready;
-            // push back to ready queue.
+        
+        // 然后更新 initproc 的子任务列表
+        let need_wake_initproc = {
+            let mut initproc_inner = INITPROC.acquire_inner_lock();
+            for child in children_to_move {
+                initproc_inner.children.push(child);
+            }
+            
+            if initproc_inner.task_status == TaskStatus::Interruptible {
+                initproc_inner.task_status = TaskStatus::Ready;
+                true
+            } else {
+                false
+            }
+        };
+        // initproc_inner lock released here
+        
+        if need_wake_initproc {
             wake_interruptible(INITPROC.clone());
         }
     }
-
-    inner.children.clear();
-    if inner.clear_child_tid != 0 {
+    
+    // === 阶段4：处理 clear_child_tid (futex) ===
+    if clear_child_tid != 0 {
         log::debug!(
             "[do_exit] do futex wake on clear_child_tid: {:X}",
-            inner.clear_child_tid
+            clear_child_tid
         );
-        //let phys_ref =
-        match translated_refmut(task.get_user_token(), inner.clear_child_tid as *mut u32) {
+        match translated_refmut(user_token, clear_child_tid as *mut u32) {
             Ok(phys_ref) => {
                 *phys_ref = 0;
                 task.futex.lock().wake(phys_ref as *const u32 as usize, 1);
@@ -139,20 +203,27 @@ pub fn do_exit(task: Arc<TaskControlBlock>, exit_code: u32) {
             Err(_) => log::warn!("invalid clear_child_tid"),
         };
     }
-    // deallocate user resource (trap context and user stack)
-    task.vm.lock().dealloc_user_res(task.tid);
-    // deallocate whole user space in advance, or if its parent do not call wait,
-    // this resource may not be recycled in a long period of time.
-    if Arc::strong_count(&task.vm) == 1 {
-        task.vm.lock().recycle_data_pages();
+    
+    // === 阶段5：释放用户资源 ===
+    {
+        let mut vm_lock = task.vm.lock();
+        vm_lock.dealloc_user_res(task.tid);
+        if Arc::strong_count(&task.vm) == 1 {
+            vm_lock.recycle_data_pages();
+        }
     }
-    drop(inner);
-    // **** release current PCB lock
-    // drop task manually to maintain rc correctly
-    log::info!("[do_exit] Pid {} exited with {}", task.pid.0, exit_code);
+    
+    log::trace!(
+        "[do_exit] Pid {} exited with {}",
+        task.pid.0,
+        exit_code
+    );
 }
 
 pub fn exit_current_and_run_next(exit_code: u32) -> ! {
+    // ==== 关键修复：关中断 ====
+    disable_interrupts();
+
     // take from Processor
     let task = take_current_task().unwrap();
     do_exit(task, exit_code);
@@ -163,44 +234,47 @@ pub fn exit_current_and_run_next(exit_code: u32) -> ! {
 }
 
 pub fn exit_group_and_run_next(exit_code: u32) -> ! {
-    // exit current, take from Processor
+    // ==== 关键修复：关中断 ====
+    disable_interrupts();
+
     let task = take_current_task().unwrap();
     let tgid = task.tgid;
     do_exit(task, exit_code);
 
     let mut exit_list = VecDeque::new();
 
-    let mut manager = manager::TASK_MANAGER.lock();
-    let mut remain = manager.ready_queue.len();
-    while let Some(task) = manager.ready_queue.pop_front() {
-        if task.tgid == tgid {
-            exit_list.push_back(task);
-        } else {
-            manager.ready_queue.push_back(task);
+    // 遍历所有 CPU 的管理器
+    use manager::TASK_MANAGERS; 
+    
+    for manager_mutex in TASK_MANAGERS.iter() {
+        let mut manager = manager_mutex.lock();
+        let mut remain = manager.ready_queue.len();
+        while let Some(task) = manager.ready_queue.pop_front() {
+            if task.tgid == tgid {
+                exit_list.push_back(task);
+            } else {
+                manager.ready_queue.push_back(task);
+            }
+            remain -= 1;
+            if remain == 0 { break; }
         }
-        remain -= 1;
-        if remain == 0 {
-            break;
+        
+        let mut remain = manager.interruptible_queue.len();
+        while let Some(task) = manager.interruptible_queue.pop_front() {
+            if task.tgid == tgid {
+                exit_list.push_back(task);
+            } else {
+                manager.interruptible_queue.push_back(task);
+            }
+            remain -= 1;
+            if remain == 0 { break; }
         }
     }
-    let mut remain = manager.interruptible_queue.len();
-    while let Some(task) = manager.interruptible_queue.pop_front() {
-        if task.tgid == tgid {
-            exit_list.push_back(task);
-        } else {
-            manager.interruptible_queue.push_back(task);
-        }
-        remain -= 1;
-        if remain == 0 {
-            break;
-        }
-    }
-    drop(manager);
 
     for task in exit_list.into_iter() {
         do_exit(task, exit_code);
     }
-    // we do not have to save task context
+    
     let mut _unused = TaskContext::zero_init();
     schedule(&mut _unused as *mut _);
     panic!("Unreachable");
@@ -214,5 +288,21 @@ lazy_static! {
 }
 
 pub fn add_initproc() {
+    println!("[add_initproc] Entering function...");
+    println!("[add_initproc] About to access INITPROC lazy_static...");
+    let initproc_pid = INITPROC.pid.0;
+    println!("[add_initproc] INITPROC pid={}", initproc_pid);
     add_task(INITPROC.clone());
+    println!("[add_initproc] INITPROC added successfully");
+}
+
+/// 初始化任务子系统的全局数据结构
+/// 必须在多核启动前由 BSP 调用，以避免多核竞争初始化 lazy_static 导致的死锁
+pub fn init_task_subsystem() {
+    use manager::{TASK_MANAGERS, TIMEOUT_WAITQUEUE};
+    use processor::PROCESSORS;
+    // 触发 lazy_static 初始化（只读访问即可）
+    let _ = PROCESSORS.len();
+    let _ = TASK_MANAGERS.len();
+    let _ = TIMEOUT_WAITQUEUE.lock();
 }

@@ -87,6 +87,7 @@ pub struct TrapContext {
     pub trap_handler: usize,
     /// The current sp to be recovered on next entry into kernel space.
     pub kernel_sp: usize,
+    pub kernel_tp: usize,
 }
 
 impl TrapContext {
@@ -100,19 +101,21 @@ impl TrapContext {
         kernel_sp: usize,
         trap_handler: usize,
     ) -> Self {
-        let mut sstatus = sstatus::read();
         // set CPU privilege to User after trapping back
         unsafe {
             set_spp(SPP::User);
         }
+        // Re-read sstatus after modification
+        let sstatus_after = sstatus::read();
         let mut cx = Self {
             gp: GeneralRegs::default(),
             fp: FloatRegs::default(),
             origin_a0: 0,
-            sstatus,
+            sstatus: sstatus_after, // Use the modified value!
             kernel_satp,
             trap_handler,
             kernel_sp,
+            kernel_tp: 0,
         };
         cx.gp.pc = entry;
         cx.set_sp(sp);

@@ -1,5 +1,5 @@
 use core::arch::asm;
-// use core::arch::naked_asm; 
+use core::arch::naked_asm;
 
 use crate::config::KERNEL_STACK_SIZE;
 
@@ -7,8 +7,7 @@ use crate::config::KERNEL_STACK_SIZE;
 #[no_mangle]
 #[link_section = ".text.entry"]
 unsafe extern "C" fn _start() -> ! {
-    // 将 naked_asm! 改为 asm!，并添加 options(noreturn)
-    asm!(
+    naked_asm!(
         r"
         ori         $t0, $zero, 0x1
         #lu52i.d     $t0, $t0, -2048
@@ -29,8 +28,7 @@ unsafe extern "C" fn _start() -> ! {
         ",
         boot_stack_size = const BOOT_STACK_SIZE,
         boot_stack = sym BOOT_STACK,
-        entry = sym crate::rust_main,
-        options(noreturn) 
+        entry = sym crate::rust_main
     )
 }
 

@@ -1,3 +1,11 @@
+//! Memory mapping area management
+//!
+//! This module manages virtual memory areas including:
+//! - Frame state management (in-memory, swapped, compressed)
+//! - Memory area mapping and unmapping
+//! - Page fault handling
+//! - OOM (Out of Memory) handling with swap and zram support
+
 use core::fmt::Debug;
 
 use super::page_table::PageTable;
@@ -19,6 +27,8 @@ use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use log::{error, trace, warn};
+
+/// Frame state representation with OOM handling support
 #[cfg(feature = "oom_handler")]
 #[derive(Clone, Debug)]
 pub enum Frame {
@@ -28,6 +38,7 @@ pub enum Frame {
     Unallocated,
 }
 
+/// Frame state representation without OOM handling
 #[cfg(not(feature = "oom_handler"))]
 #[derive(Clone, Debug)]
 pub enum Frame {
