@@ -4,7 +4,8 @@ mod manager;
 pub mod pid;
 pub mod processor;
 pub mod signal;
-mod task;
+pub mod state_machine;
+pub mod task;
 pub mod threads;
 
 use crate::hal::__switch;

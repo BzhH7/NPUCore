@@ -88,6 +88,41 @@ pub struct TaskControlBlock {
     pub futex: Arc<Mutex<Futex>>,
 }
 
+/// Timer type enumeration for interval timer operations
+/// 
+/// POSIX defines three types of interval timers:
+/// - Real: Wall clock time (SIGALRM)
+/// - Virtual: User CPU time only (SIGVTALRM)
+/// - Prof: User + System CPU time (SIGPROF)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+pub enum TimerKind {
+    /// Real-time timer (ITIMER_REAL) - decrements in real time
+    Real = 0,
+    /// Virtual timer (ITIMER_VIRTUAL) - decrements during user execution
+    Virtual = 1,
+    /// Profiling timer (ITIMER_PROF) - decrements during user + kernel execution
+    Prof = 2,
+}
+
+impl TimerKind {
+    /// Get the signal to deliver when this timer expires
+    #[inline]
+    pub const fn expiry_signal(&self) -> Signals {
+        match self {
+            Self::Real => Signals::SIGALRM,
+            Self::Virtual => Signals::SIGVTALRM,
+            Self::Prof => Signals::SIGPROF,
+        }
+    }
+    
+    /// Get the timer array index
+    #[inline]
+    pub const fn index(&self) -> usize {
+        *self as usize
+    }
+}
+
 /// Task control block inner state
 pub struct TaskControlBlockInner {
     /// Signal mask
@@ -260,59 +295,79 @@ impl TaskControlBlockInner {
         // 更新用户CPU时间
         self.rusage.ru_utime = self.rusage.ru_utime + diff;
         // 更新虚拟定时器
-        self.update_itimer_virtual_if_exists(diff);
+        self.tick_interval_timer(TimerKind::Virtual, diff);
         // 更新性能分析定时器
-        self.update_itimer_prof_if_exists(diff);
+        self.tick_interval_timer(TimerKind::Prof, diff);
     }
     /// 在离开陷阱时更新进程时间
     pub fn update_process_times_leave_trap(&mut self, trap_cause: TrapImpl) {
         let now = TimeVal::now();
-        self.update_itimer_real_if_exists(now - self.clock.last_enter_u_mode);
+        self.tick_interval_timer(TimerKind::Real, now - self.clock.last_enter_u_mode);
         if trap_cause.is_timer() {
             let diff = now - self.clock.last_enter_s_mode;
             self.rusage.ru_stime = self.rusage.ru_stime + diff;
-            self.update_itimer_prof_if_exists(diff);
+            self.tick_interval_timer(TimerKind::Prof, diff);
         }
         self.clock.last_enter_u_mode = now;
     }
-    /// 更新实时定时器
+    
+    /// Generic interval timer tick handler
+    ///
+    /// Decrements the specified timer by the given time delta. If the timer
+    /// expires (reaches zero), delivers the appropriate signal and reloads
+    /// from the interval value.
+    ///
+    /// # Arguments
+    /// * `kind` - Which timer to update (Real, Virtual, or Prof)
+    /// * `delta` - Time elapsed since last tick
+    ///
+    /// # Timer Behavior
+    /// - Timer only ticks if `it_value` is non-zero
+    /// - On expiry, the associated signal is queued
+    /// - If `it_interval` is non-zero, timer auto-reloads; otherwise it stops
+    pub fn tick_interval_timer(&mut self, kind: TimerKind, delta: TimeVal) {
+        let idx = kind.index();
+        let timer = &mut self.timer[idx];
+        
+        // Only process active timers
+        if timer.it_value.is_zero() {
+            return;
+        }
+        
+        // Decrement timer value
+        timer.it_value = timer.it_value - delta;
+        
+        // Check for expiration
+        if timer.it_value.is_zero() {
+            // Queue the expiry signal
+            self.sigpending.insert(kind.expiry_signal());
+            // Reload from interval (may be zero for one-shot timers)
+            timer.it_value = timer.it_interval;
+        }
+    }
+    
+    /// Update real-time timer (ITIMER_REAL)
+    /// 
+    /// Wrapper for backward compatibility - delegates to generic handler
+    #[inline]
     pub fn update_itimer_real_if_exists(&mut self, diff: TimeVal) {
-        // 如果当前定时器不为0
-        if !self.timer[0].it_value.is_zero() {
-            // 更新定时器
-            self.timer[0].it_value = self.timer[0].it_value - diff;
-            // 如果定时器为0
-            if self.timer[0].it_value.is_zero() {
-                // 添加信号
-                self.add_signal(Signals::SIGALRM);
-                // 重置定时器
-                self.timer[0].it_value = self.timer[0].it_interval;
-            }
-        }
+        self.tick_interval_timer(TimerKind::Real, diff);
     }
-    /// 更新虚拟定时器
-    /// 与上面的更新实时定时器类似
-    /// 但是发送的信号是SIGVTALRM
+    
+    /// Update virtual timer (ITIMER_VIRTUAL)
+    /// 
+    /// Wrapper for backward compatibility - delegates to generic handler
+    #[inline]
     pub fn update_itimer_virtual_if_exists(&mut self, diff: TimeVal) {
-        if !self.timer[1].it_value.is_zero() {
-            self.timer[1].it_value = self.timer[1].it_value - diff;
-            if self.timer[1].it_value.is_zero() {
-                self.add_signal(Signals::SIGVTALRM);
-                self.timer[1].it_value = self.timer[1].it_interval;
-            }
-        }
+        self.tick_interval_timer(TimerKind::Virtual, diff);
     }
-    /// 更新性能分析定时器
-    /// 与上面的更新实时定时器类似
-    /// 但是发送的信号是SIGPROF
+    
+    /// Update profiling timer (ITIMER_PROF)
+    /// 
+    /// Wrapper for backward compatibility - delegates to generic handler
+    #[inline]
     pub fn update_itimer_prof_if_exists(&mut self, diff: TimeVal) {
-        if !self.timer[2].it_value.is_zero() {
-            self.timer[2].it_value = self.timer[2].it_value - diff;
-            if self.timer[2].it_value.is_zero() {
-                self.add_signal(Signals::SIGPROF);
-                self.timer[2].it_value = self.timer[2].it_interval;
-            }
-        }
+        self.tick_interval_timer(TimerKind::Prof, diff);
     }
 }
 
