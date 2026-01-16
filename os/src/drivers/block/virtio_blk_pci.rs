@@ -9,7 +9,7 @@ use alloc::sync::Arc;
 use lazy_static::*;
 use core::ptr::NonNull;
 use virtio_drivers::{BufferDirection, Hal};
-use virtio_drivers::transport::pci::bus::{BarInfo, Cam, Command, DeviceFunction, MemoryBarType, PciRoot, MmioCam};
+use virtio_drivers::transport::pci::bus::{BarInfo, Cam, Command, MemoryBarType, PciRoot};
 use virtio_drivers::transport::pci::{PciTransport, virtio_device_type};
 use virtio_drivers::device::blk::VirtIOBlk;
 use virtio_drivers::transport::DeviceType;
@@ -71,8 +71,7 @@ fn enumerate_pci() -> Option<PciTransport> {
     let mmconfig_base = PCI_ECAM_BASE as *mut u8;
     println!("[PCI] ECAM base: {:#x}", mmconfig_base as usize);
 
-    let mmio_cam = unsafe { MmioCam::new(mmconfig_base, Cam::Ecam) };
-    let mut pci_root = PciRoot::new(mmio_cam);
+    let mut pci_root = unsafe { PciRoot::new(mmconfig_base, Cam::Ecam) };
     let mut transport = None;
 
     for (device_function, info) in pci_root.enumerate_bus(0) {
@@ -85,16 +84,15 @@ fn enumerate_pci() -> Option<PciTransport> {
             let mut allocator = PciRangeAllocator::new(VIRT_PCI_BASE, VIRT_PCI_SIZE);
             let mut bar_index = 0;
             while bar_index < 6 {
-                if let Some(bar) = pci_root.bar_info(device_function, bar_index).unwrap() {
-                    if let BarInfo::Memory { address_type, address, size, .. } = bar {
-                        println!("[PCI] BAR{}: {:?}, addr={:#x}, size={:#x}", bar_index, address_type, address, size);
-                        if address == 0 && size != 0 {
-                            if let Some(alloc_addr) = allocator.alloc_pci_mem(size as usize) {
-                                match address_type {
-                                    MemoryBarType::Width64 => pci_root.set_bar_64(device_function, bar_index, alloc_addr as u64),
-                                    MemoryBarType::Width32 => pci_root.set_bar_32(device_function, bar_index, alloc_addr as u32),
-                                    _ => {}
-                                }
+                let bar = pci_root.bar_info(device_function, bar_index).unwrap();
+                if let BarInfo::Memory { address_type, address, size, .. } = bar {
+                    println!("[PCI] BAR{}: {:?}, addr={:#x}, size={:#x}", bar_index, address_type, address, size);
+                    if address == 0 && size != 0 {
+                        if let Some(alloc_addr) = allocator.alloc_pci_mem(size as usize) {
+                            match address_type {
+                                MemoryBarType::Width64 => pci_root.set_bar_64(device_function, bar_index, alloc_addr as u64),
+                                MemoryBarType::Width32 => pci_root.set_bar_32(device_function, bar_index, alloc_addr as u32),
+                                _ => {}
                             }
                         }
                     }
@@ -108,7 +106,7 @@ fn enumerate_pci() -> Option<PciTransport> {
 
             pci_root.set_command(device_function, Command::IO_SPACE | Command::MEMORY_SPACE | Command::BUS_MASTER);
             println!("[PCI] Device enabled.");
-            transport = Some(PciTransport::new::<VirtioHal, MmioCam>(&mut pci_root, device_function).unwrap());
+            transport = Some(PciTransport::new::<VirtioHal>(&mut pci_root, device_function).unwrap());
             break;
         }
     }

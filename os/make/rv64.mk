@@ -67,7 +67,6 @@ mv:
 build: env $(KERNEL_BIN) mv
 
 env:
-	rustup override set nightly-2024-02-03
 	(rustup target list | grep "riscv64gc-unknown-none-elf (installed)") || rustup target add $(TARGET)
 	rustup target add $(TARGET)
 	rustup component add rust-src
@@ -89,12 +88,18 @@ fs-img: user
 # xein TODO: 注意需要评估zero_init启用与否的影响
 kernel:
 	@echo Platform: $(BOARD)
+	@echo "Setting up .cargo configuration..."
+	@if [ -d cargo_config ]; then \
+		rm -rf .cargo; \
+		mv cargo_config .cargo; \
+	fi
 	@cp -f src/hal/arch/riscv/linker-$(BOARD).ld src/hal/arch/riscv/linker.ld
     ifeq ($(MODE), debug)
-		@LOG=${LOG} cargo build --features "board_$(BOARD) $(LOG_OPTION) block_$(BLK_MODE) oom_handler" --no-default-features
+		@LOG=${LOG} cargo build --target $(TARGET) --features "board_$(BOARD) $(LOG_OPTION) block_$(BLK_MODE) oom_handler" --no-default-features
     else
-		@LOG=${LOG} cargo build --release --features "board_$(BOARD) $(LOG_OPTION) block_$(BLK_MODE) oom_handler" --no-default-features
+		@LOG=${LOG} cargo build --target $(TARGET) --release --features "board_$(BOARD) $(LOG_OPTION) block_$(BLK_MODE) oom_handler" --no-default-features
     endif
+	@mv .cargo cargo_config
 
 clean:
 	@cargo clean
@@ -172,7 +177,7 @@ test:
 		-kernel $(KERNEL_RV) \
 		-m 128M \
 		-nographic \
-		-smp 4 \
+		-smp 1 \
 		-bios default \
 		-drive file=$(SDCARD_RV),if=none,format=raw,id=x0  \
 		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \

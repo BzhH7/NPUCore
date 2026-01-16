@@ -9,10 +9,10 @@
 #[macro_use]
 extern crate zerocopy;
 
-#[path = "../include.rs"]
+#[path = "../util.rs"]
 mod util;
 
-use self::util::{util::NotZerocopy, util::AU16};
+use self::util::{NotZerocopy, AU16};
 use zerocopy::KnownLayout;
 
 fn main() {}
@@ -22,20 +22,11 @@ fn main() {}
 // the compiler will never get to that pass, and so we won't get the errors.
 
 //
-// TryFromBytes errors
+// FromZeroes errors
 //
 
-#[derive(TryFromBytes)]
-struct TryFromBytes1 {
-    value: NotZerocopy,
-}
-
-//
-// FromZeros errors
-//
-
-#[derive(FromZeros)]
-struct FromZeros1 {
+#[derive(FromZeroes)]
+struct FromZeroes1 {
     value: NotZerocopy,
 }
 
@@ -49,12 +40,12 @@ struct FromBytes1 {
 }
 
 //
-// IntoBytes errors
+// AsBytes errors
 //
 
-#[derive(IntoBytes)]
+#[derive(AsBytes)]
 #[repr(C)]
-struct IntoBytes1 {
+struct AsBytes1 {
     value: NotZerocopy,
 }
 

@@ -133,6 +133,7 @@ use crate::hal::TrapContext;
 #[no_mangle]
 pub fn rust_main(hart_id: usize) -> ! {
     
+    #[cfg(target_arch = "riscv64")]
     unsafe {
         riscv::register::sstatus::clear_sie();
     }
@@ -267,6 +268,7 @@ pub fn rust_main(hart_id: usize) -> ! {
     //     所有核心通用逻辑
     // ==========================
     
+    #[cfg(target_arch = "riscv64")]
     unsafe { riscv::register::sstatus::set_sie(); }
 
     // 进入调度循环

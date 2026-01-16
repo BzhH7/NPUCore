@@ -5,13 +5,13 @@
 
 TARGET := loongarch64-unknown-none
 MODE := release
-FS_MODE := ext4
+FS_MODE := fat32
 
 KERNEL_ELF = target/$(TARGET)/$(MODE)/os
 KERNEL_BIN = $(KERNEL_ELF).bin
 KERNEL_UIMG = $(KERNEL_ELF).ui
 
-BOARD ?= laqemu
+BOARD ?= 2k1000
 LDBOARD = la2k1000
 
 # 大写K转小写
@@ -52,6 +52,16 @@ MINITERM_START_CMD=python3 -m serial.tools.miniterm --dtr 0 --rts 0 --filter dir
 LA_ENTRY_POINT = 0x9000000090000000
 LA_LOAD_ADDR = 0x9000000090000000
 
+RUN_SCRIPT := ./run_script
+QEMU_BIOS_DIR := ../util/qemu-2k1000/gz/
+QEMU_BIOS_SRC := $(QEMU_BIOS_DIR)/u-boot-with-spl.bin
+TFTP_DIR := ../fs-img-dir
+DISK_IMG := $(TFTP_DIR)/rootfs-ubifs-ze.img
+SDCARD_LA := ../sdcard.img
+
+KERNEL_LA := ../kernel-la
+KERNEL_BIN_OUT := ../kernel.bin
+
 run: clean env update-usr run-inner 
 
 update-usr:user ext4
@@ -76,12 +86,18 @@ $(KERNEL_BIN): kernel
 	@$(READELF) -ash $(KERNEL_ELF) > target/$(TARGET)/$(MODE)/sec.txt &
 
 kernel:
+	@echo "Restoring .cargo configuration..."
+	@if [ -d cargo_config ]; then \
+		rm -rf .cargo; \
+		mv cargo_config .cargo; \
+	fi
 	@echo Platform: $(BOARD)
     ifeq ($(MODE), debug)
 		@cargo build --no-default-features --features "comp board_$(BOARD) block_$(BLOCK) $(LOG_OPTION)" --target $(TARGET)
     else
 		@cargo build --no-default-features --release --features "comp board_$(BOARD) block_$(BLOCK) $(LOG_OPTION)"  --target $(TARGET)
     endif
+		@mv .cargo cargo_config;
 
 uimage: $(KERNEL_BIN)
 	../util/mkimage -A loongarch -O linux -T kernel -C none -a $(LA_LOAD_ADDR) -e $(LA_ENTRY_POINT) -n NPUcore+ -d $(KERNEL_BIN) $(KERNEL_UIMG)
@@ -105,6 +121,9 @@ endif
 all: ext4 build uimage mv
 mv:
 	mv $(U_IMG) ../uImage
+	cp -f $(KERNEL_ELF) $(KERNEL_LA)
+	cp -f $(KERNEL_BIN) $(KERNEL_BIN_OUT)
+
 
 gdb:
 ifeq ($(BOARD),laqemu)
@@ -114,13 +133,40 @@ else ifeq ($(BOARD), 2k1000)
 endif
 
 env: # switch-toolchain
-	-(rustup target list | grep "$(TARGET) (installed)") || rustup target add $(TARGET)
-	if [ "$(dpkg --list|grep "ii[[:space:]]*expect")"="" ];then true;else sudo apt install expect;fi
+	rustup override set nightly-2024-02-03
+# 	@sed -i 's@http://.*security.ubuntu.com@http://mirrors.tuna.tsinghua.edu.cn@g' /etc/apt/sources.list
+# 	@sed -i 's@http://.*archive.ubuntu.com@http://mirrors.tuna.tsinghua.edu.cn@g' /etc/apt/sources.list
+#     # 3. 暴力清理 apt 缓存列表，解决 "Hash Sum mismatch" 错误
+# 	@rm -rf /var/lib/apt/lists/*
+# 	@apt-get update
+# 	@DEBIAN_FRONTEND=noninteractive apt-get install -y expect
+	(rustup target list | grep "$(TARGET) (installed)") || rustup target add $(TARGET)
+	(rustup target list | grep "loongarch64-unknown-none (installed)") || rustup target add loongarch64-unknown-none
+	rustup component add rust-src
+	rustup component add llvm-tools-preview
+
+
+comp:
+	DEBUG_GMAC_PHYAD=0 $(RUN_SCRIPT) \
+	qemu-system-loongarch64 \
+	-M ls2k \
+	-m 1024 \
+	-smp threads=1 \
+	-serial stdio \
+	-vnc :0 \
+	-drive if=pflash,file=$(QEMU_BIOS_SRC),format=raw \
+	-drive if=mtd,file=target/nand.dat,format=raw \
+	-hda $(DISK_IMG) \
+	-hdb $ \
+	-net nic -net user,net=192.168.1.2/24,tftp=$(TFTP_DIR) \
+	-s
+
 
 clean:
 	@cargo clean
 	-@rm ../fs-img-dir/uImage
 	-@rm ../fs-img-dir/rootfs-ubifs-ze.img
 	-@cd ../user && make clean
+	
 
 .PHONY: user update gdb new-gdb monitor .FORCE

@@ -21,8 +21,24 @@ _start:
     # The barrier
     sub.d       $t0,    $t0,    $t0
     csrwr       $t0,    0x181
+
+    # 设置DMW2用于段8的非缓存IO访问 (UART等外设)
+    # DMW2 = 0x8000_0000_0000_0011
+    # bit 0: PLV0 = 1 (allow PLV0 access)
+    # bit 4: MAT = 1 (Strongly Ordered Uncached)
+    # bit 60-63: VSEG = 8
+    lu12i.w     $t0,    0x0
+    ori         $t0,    $t0,    0x11
+    lu32i.d     $t0,    0x0
+    lu52i.d     $t0,    $t0,    -2048    # 0x800 -> segment 8
+    csrwr       $t0,    0x182            # DMW2
+
     sub.d       $t0,    $t0,    $t0
-    la.global $sp, boot_stack_top
+    la.global   $sp, boot_stack_top
+
+    # 读取CPU ID作为rust_main的第一个参数 (hart_id)
+    csrrd       $a0,    0x20             # 读取CPUID到$a0
+
     bl          rust_main
 
     .section .bss.stack

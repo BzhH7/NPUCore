@@ -73,6 +73,8 @@ pub extern "C" fn _start() -> ! {
         }
         _parameter(argc, argv);
     }
+    #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
+    unreachable!();
 }
 
 #[linkage = "weak"]

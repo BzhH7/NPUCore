@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use user_lib::{exec, exit, fork, shutdown, waitpid, println};
+use user_lib::{exec, exit, fork, waitpid, shutdown, println}; 
 
 #[no_mangle]
 #[link_section = ".text.entry"]
@@ -11,44 +11,69 @@ pub extern "C" fn _start() -> ! {
 
 #[no_mangle]
 fn main() -> i32 {
-    let tests = [
-        "brk\0", "chdir\0", "clone\0", "close\0", "dup\0", "dup2\0", 
-        "execve\0", "exit\0", "fork\0", "fstat\0", "getcwd\0", "getdents\0", 
-        "getpid\0", "getppid\0", "gettimeofday\0", "mkdir_\0", "mmap\0", 
-        "mount\0", "munmap\0", "open\0", "openat\0", "pipe\0", "read\0", 
-        "sleep\0", "times\0", "umount\0", "uname\0", "unlink\0", "wait\0", 
-        "waitpid\0", "write\0", "yield\0" 
+    // 1. 设置 Shell 路径和环境变量
+    let path = "/bash\0";
+    let environ = [
+        "SHELL=/bash\0".as_ptr(),
+        "PWD=/\0".as_ptr(),
+        "PATH=/\0".as_ptr(),
+        "LD_LIBRARY_PATH=/\0".as_ptr(),
+        core::ptr::null(),
     ];
 
-    // 设置 PATH 环境变量，确保能在根目录找到这些程序
-    let environ = [
-        "PATH=/\0".as_ptr(),
-        core::ptr::null(),
+    let tests = [
+        [path.as_ptr(), "-c\0".as_ptr(), "./brk\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./chdir\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./clone\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./close\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./dup\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./dup2\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./execve\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./exit\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./fork\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./fstat\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./getcwd\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./getdents\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./getpid\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./getppid\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./gettimeofday\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./mkdir_\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./mmap\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./mount\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./munmap\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./open\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./openat\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./pipe\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./read\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./sleep\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./statx\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./times\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./umount\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./uname\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./unlink\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./wait\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./waitpid\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./write\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./yield\0".as_ptr(), core::ptr::null()],
     ];
 
     let mut exit_code: i32 = 0;
 
-    println!("[initproc] Starting all tests...");
+    println!("[initproc] Starting standalone tests directly from root...");
 
-    for &test_name in tests.iter() {
-        println!("[initproc] Running test: {}", test_name);
-        
+    for argv in tests.iter() {
+        println!("[initproc] Running test command...");
+
         let pid = fork();
         if pid == 0 {
-            // 子进程：执行具体的测试程序
-            let args = [
-                test_name.as_ptr(),
-                core::ptr::null(),
-            ];
             
-            // 执行程序
-            exec(test_name, &args, &environ);
+            // 执行 bash -c "./test_name"
+            exec(path, argv, &environ);
             
-            // 如果 exec 失败（比如文件不存在），需要手动退出，防止子进程跑飞
-            println!("[initproc] Failed to exec {}", test_name);
+            println!("[initproc] Failed to exec bash");
             exit(-1);
         } else {
-            // 父进程：等待当前测试结束
+            // 父进程等待
             waitpid(pid as usize, &mut exit_code);
         }
     }
