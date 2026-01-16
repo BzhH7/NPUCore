@@ -1,4 +1,5 @@
 mod context;
+pub mod cfs_scheduler;
 mod elf;
 mod manager;
 pub mod pid;
