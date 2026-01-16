@@ -6,11 +6,13 @@
 //! - Interrupt management (`interrupt_guard`)
 //! - Random number generation (`random`)
 //! - Tracing and instrumentation (`trace`)
+//! - Telemetry and metrics (`telemetry`)
 
 pub mod error;
 pub mod interrupt_guard;
 pub mod kerror;
 pub mod random;
+pub mod telemetry;
 pub mod trace;
 
 pub use interrupt_guard::InterruptGuard;
