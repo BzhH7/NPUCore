@@ -1,15 +1,35 @@
 //! Memory management subsystem
 //!
 //! This module provides memory management facilities including:
-//! - Physical frame allocation
+//! - Physical frame allocation (stack-based and bitmap-based strategies)
 //! - Virtual address space management
 //! - Page table operations
 //! - Heap allocation
+//!
+//! # Architecture
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────┐
+//! │                Memory Subsystem                      │
+//! ├─────────────────────────────────────────────────────┤
+//! │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  │
+//! │  │   Frame     │  │   Virtual   │  │    Page     │  │
+//! │  │ Allocator   │  │   Memory    │  │   Table     │  │
+//! │  │ (physical)  │  │   (mmap)    │  │ (translate) │  │
+//! │  └─────────────┘  └─────────────┘  └─────────────┘  │
+//! │         ↓                ↓                ↓         │
+//! │  ┌─────────────────────────────────────────────┐    │
+//! │  │           Kernel Heap Allocator             │    │
+//! │  └─────────────────────────────────────────────┘    │
+//! └─────────────────────────────────────────────────────┘
+//! ```
 
 pub mod address;
+pub mod bitmap_alloc;
 mod frame_allocator;
 mod heap_allocator;
 mod map_area;
+pub mod memory_builder;
 mod memory_set;
 mod page_table;
 #[cfg(feature = "zram")]

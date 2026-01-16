@@ -1,6 +1,22 @@
 //! Physical frame allocator
 //!
-//! Provides stack-based frame allocation for physical memory management.
+//! This module provides physical memory frame allocation with two strategies:
+//! 1. Stack-based allocation (default): Simple LIFO recycling, O(1) alloc/dealloc
+//! 2. Bitmap-based allocation: Compact memory overhead, supports contiguous allocation
+//!
+//! # Usage
+//!
+//! The allocator is initialized at boot time with the available physical memory range.
+//! Frames are allocated via `frame_alloc()` and automatically deallocated when
+//! `FrameTracker` is dropped (RAII pattern).
+//!
+//! # OOM Handling
+//!
+//! When `oom_handler` feature is enabled, allocation failures trigger a memory
+//! reclamation cascade:
+//! 1. Filesystem cache eviction
+//! 2. Current task memory cleanup
+//! 3. System-wide memory pressure notification
 
 #[cfg(feature = "oom_handler")]
 use super::super::fs;
