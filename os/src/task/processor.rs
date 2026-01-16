@@ -2,6 +2,7 @@ use super::{__switch, do_wake_expired};
 use super::{fetch_task, add_task, sleep_interruptible, TaskStatus};
 use super::{TaskContext, TaskControlBlock};
 use crate::hal::{TrapContext, disable_interrupts, restore_interrupts};
+use crate::timer::get_time_ns;
 use alloc::sync::Arc;
 use lazy_static::*;
 use spin::Mutex;
@@ -86,6 +87,13 @@ pub fn run_tasks() {
         // 【关键修复】先检查是否有pending任务需要处理
         // 这个任务的上下文已经在上次__switch时保存了
         if let Some(pending) = processor.take_pending() {
+            // CFS: 更新被切换出去任务的vruntime
+            {
+                let now = get_time_ns() as u64;
+                let mut inner = pending.acquire_inner_lock();
+                inner.sched_entity.update_runtime(now);
+            }
+            
             // 根据任务状态决定加入哪个队列
             let status = pending.acquire_inner_lock().task_status;
             drop(processor); // 先释放锁再操作队列，避免锁顺序问题
@@ -113,6 +121,8 @@ pub fn run_tasks() {
                 let mut task_inner = task.acquire_inner_lock();
                 task_inner.get_trap_cx().kernel_tp = cpu_id;
                 task_inner.task_status = TaskStatus::Running;
+                // CFS: 记录任务开始执行的时间
+                task_inner.sched_entity.exec_start = get_time_ns() as u64;
                 &task_inner.task_cx as *const TaskContext
             };
             
@@ -140,10 +150,13 @@ pub fn run_tasks() {
             }
             // 回到这里时，任务已被挂起，pending_task已设置（如果是正常suspend）
             // Debug: Verify we came back correctly
-            let current_ra: usize;
-            unsafe { core::arch::asm!("mv {}, ra", out(reg) current_ra); }
-            if current_ra == 0 {
-                panic!("[CPU {}] Returned from __switch with ra=0!", cpu_id);
+            #[cfg(target_arch = "riscv64")]
+            {
+                let current_ra: usize;
+                unsafe { core::arch::asm!("mv {}, ra", out(reg) current_ra); }
+                if current_ra == 0 {
+                    panic!("[CPU {}] Returned from __switch with ra=0!", cpu_id);
+                }
             }
             // 继续循环会处理pending_task
         } else {
@@ -154,7 +167,7 @@ pub fn run_tasks() {
             log::info!("[run_tasks] No tasks. Enabling interrupts and entering wfi...");
 
             // ==== DEBUG START: 检查中断寄存器 ====
-            #[cfg(feature = "riscv")]
+            #[cfg(target_arch = "riscv64")]
             {
                 let sstatus_val = unsafe { riscv::register::sstatus::read() };
                 let sie_val = unsafe { riscv::register::sie::read() };

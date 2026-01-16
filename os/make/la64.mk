@@ -81,11 +81,17 @@ fs-img: user
 kernel:
 	@echo Platform: $(BOARD)
 	@echo BLK_MODE: $(BLK_MODE)
+	@echo "Setting up .cargo configuration..."
+	@if [ -d cargo_config ]; then \
+		rm -rf .cargo; \
+		mv cargo_config .cargo; \
+	fi
 ifeq ($(MODE), debug)
 	@LOG=$(LOG) cargo build --features "board_$(BOARD) $(LOG_OPTION) block_$(BLK_MODE) oom_handler" --no-default-features --target loongarch64-unknown-none
 else
 	@LOG=$(LOG) cargo build --release --features "board_$(BOARD) $(LOG_OPTION) block_$(BLK_MODE) oom_handler" --no-default-features --target loongarch64-unknown-none
 endif
+	@mv .cargo cargo_config
 
 clean:
 	@cargo clean

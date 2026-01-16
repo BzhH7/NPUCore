@@ -34,6 +34,7 @@ use core::fmt::{self, Debug, Formatter};
 use log::trace;
 use spin::{Mutex, MutexGuard};
 use crate::task::processor::current_cpu_id;
+use crate::task::cfs_scheduler::SchedEntity;
 
 /// Task filesystem state
 #[derive(Clone)]
@@ -157,6 +158,8 @@ pub struct TaskControlBlockInner {
     pub clock: ProcClock,
     /// Timers
     pub timer: [ITimerVal; 3],
+    /// CFS scheduling entity
+    pub sched_entity: SchedEntity,
 }
 
 /// Robust mutex list
@@ -474,6 +477,7 @@ impl TaskControlBlock {
                 rusage: Rusage::new(),
                 clock: ProcClock::new(),
                 timer: [ITimerVal::new(); 3],
+                sched_entity: SchedEntity::default(),
             }),
         };
         // 准备用户空间的陷阱上下文
@@ -593,7 +597,7 @@ impl TaskControlBlock {
                 let mut manager = manager_mutex.lock();
                 // 销毁所有其他同一线程组的任务
                 manager
-                    .ready_queue
+                    .cfs_rq
                     .retain(|task| (*task).tgid != (*self).tgid);
                 manager
                     .interruptible_queue
@@ -724,6 +728,8 @@ impl TaskControlBlock {
                 // constants
                 task_status: TaskStatus::Ready,
                 exit_code: 0,
+                // CFS: inherit nice value from parent
+                sched_entity: SchedEntity::new(parent_inner.sched_entity.nice),
             }),
         });
         // 添加到父进程或者祖父进程的子进程列表

@@ -47,7 +47,7 @@ pub extern "C" fn __rfill() {
     //         w_dm_df_pd_i_lv;
     // let i = 0xA8;
     unsafe {
-        core::arch::naked_asm!(
+        asm!(
             // PGD: 0x1b CRMD:0x0 PWCL:0x1c TLBRBADV:0x89 TLBERA:0x8a TLBRSAVE:0x8b SAVE:0x30
             // TLBREHi: 0x8e STLBPS: 0x1e MERRsave:0x95
             "
@@ -103,6 +103,7 @@ pub extern "C" fn __rfill() {
     csrwr  $t0, 0x8d
     b      2b
 ",
+            options(noreturn)
         )
     }
 }
@@ -500,6 +501,20 @@ pub extern "C" fn trap_from_kernel(gr: &mut GeneralRegs) {
                 );
             }
             //debug!("{:?}", gr);
+            return;
+        }
+        // 内核态定时器中断处理
+        // 清除定时器中断并重新设置，然后直接返回继续执行
+        Trap::Interrupt(Interrupt::Timer) => {
+            // 唤醒过期的任务
+            do_wake_expired();
+            // 记录时钟中断次数（中断号5）
+            crate::fs::dev::interrupts::Interrupts::increment_interrupt_count(5);
+            // 清除定时器中断
+            TIClr::read().clear_timer().write();
+            // 重新使能定时器中断
+            enable_timer_interrupt();
+            // 内核态不进行任务切换，直接返回继续执行
             return;
         }
         // Xein Add This

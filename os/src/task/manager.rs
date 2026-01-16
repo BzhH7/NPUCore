@@ -1,6 +1,6 @@
 /*
     此文件用于管理任务的调度
-    内容与RISCV版本相同，无需修改
+    使用CFS (Completely Fair Scheduler) 调度算法
 */
 use core::cmp::Ordering;
 
@@ -13,6 +13,7 @@ use crate::timer::TimeSpec;
 use crate::config::MAX_CPU_NUM;
 use crate::utils::InterruptGuard;
 
+use super::cfs_scheduler::CfsRunQueue;
 use super::{current_task, TaskControlBlock};
 use alloc::collections::{BinaryHeap, VecDeque};
 use alloc::sync::{Arc, Weak};
@@ -61,10 +62,10 @@ impl ActiveTracker {
 }
 
 #[cfg(feature = "oom_handler")]
-/// 任务管理器
+/// 任务管理器 (使用CFS调度)
 pub struct TaskManager {
-    /// 一个双端队列，用于存储就绪态任务
-    pub ready_queue: VecDeque<Arc<TaskControlBlock>>,
+    /// CFS运行队列，用于存储就绪态任务
+    pub cfs_rq: CfsRunQueue,
     /// 一个双端队列，用于存储可中断状态任务
     pub interruptible_queue: VecDeque<Arc<TaskControlBlock>>,
     /// 任务激活状态跟踪器，用于跟踪任务的激活状态，并在OOM时释放内存
@@ -74,17 +75,18 @@ pub struct TaskManager {
 
 #[cfg(not(feature = "oom_handler"))]
 pub struct TaskManager {
-    pub ready_queue: VecDeque<Arc<TaskControlBlock>>,
+    /// CFS运行队列，用于存储就绪态任务
+    pub cfs_rq: CfsRunQueue,
     pub interruptible_queue: VecDeque<Arc<TaskControlBlock>>,
 }
 
-/// 简单的FIFO调度器
+/// CFS调度器
 impl TaskManager {
     #[cfg(feature = "oom_handler")]
     /// 构造函数
     pub fn new() -> Self {
         Self {
-            ready_queue: VecDeque::new(),
+            cfs_rq: CfsRunQueue::new(),
             interruptible_queue: VecDeque::new(),
             active_tracker: ActiveTracker::new(),
         }
@@ -92,18 +94,21 @@ impl TaskManager {
     #[cfg(not(feature = "oom_handler"))]
     pub fn new() -> Self {
         Self {
-            ready_queue: VecDeque::new(),
+            cfs_rq: CfsRunQueue::new(),
             interruptible_queue: VecDeque::new(),
         }
     }
-    /// 添加一个任务到就绪队列
+    /// 添加一个任务到CFS就绪队列
     pub fn add(&mut self, task: Arc<TaskControlBlock>) {
-        self.ready_queue.push_back(task);
+        let mut inner = task.acquire_inner_lock();
+        let is_new = inner.sched_entity.sum_exec_runtime == 0;
+        self.cfs_rq.enqueue(task.clone(), &mut inner.sched_entity, is_new);
+        drop(inner);
     }
-    /// 从就绪队列中取出一个任务
+    /// 从CFS就绪队列中取出下一个任务(vruntime最小的任务)
     #[cfg(feature = "oom_handler")]
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
-        match self.ready_queue.pop_front() {
+        match self.cfs_rq.pick_next() {
             Some(task) => {
                 // 标记任务为激活状态
                 self.active_tracker.mark_active(task.pid.0);
@@ -114,7 +119,7 @@ impl TaskManager {
     }
     #[cfg(not(feature = "oom_handler"))]
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
-        self.ready_queue.pop_front()
+        self.cfs_rq.pick_next()
     }
     /// 添加一个任务到可中断队列
     pub fn add_interruptible(&mut self, task: Arc<TaskControlBlock>) {
@@ -128,23 +133,31 @@ impl TaskManager {
     }
     /// 根据pid查找任务
     pub fn find_by_pid(&self, pid: usize) -> Option<Arc<TaskControlBlock>> {
-        self.ready_queue
+        // 先在CFS队列中查找
+        if let Some(task) = self.cfs_rq.find_by_pid(pid) {
+            return Some(task);
+        }
+        // 再在可中断队列中查找
+        self.interruptible_queue
             .iter()
-            .chain(self.interruptible_queue.iter())
             .find(|task| task.pid.0 == pid)
             .cloned()
     }
     /// 根据tgid(线程组id)查找任务
     pub fn find_by_tgid(&self, tgid: usize) -> Option<Arc<TaskControlBlock>> {
-        self.ready_queue
+        // 先在CFS队列中查找
+        if let Some(task) = self.cfs_rq.find_by_tgid(tgid) {
+            return Some(task);
+        }
+        // 再在可中断队列中查找
+        self.interruptible_queue
             .iter()
-            .chain(self.interruptible_queue.iter())
             .find(|task| task.tgid == tgid)
             .cloned()
     }
     /// 就绪队列中任务数量
     pub fn ready_count(&self) -> u16 {
-        self.ready_queue.len() as u16
+        self.cfs_rq.len() as u16
     }
     /// 可中断队列中任务数量
     pub fn interruptible_count(&self) -> u16 {
@@ -162,8 +175,8 @@ impl TaskManager {
             }
         }
     }
-    /// 这个函数会将`task`从`interruptible_queue`中删除，并加入`ready_queue`。
-    /// 如果一切正常的话，这个`task`将会被加入`ready_queue`。如果`task`已经被唤醒，那么返回`Err()`。
+    /// 这个函数会将`task`从`interruptible_queue`中删除，并加入CFS就绪队列。
+    /// 如果一切正常的话，这个`task`将会被加入CFS就绪队列。如果`task`已经被唤醒，那么返回`Err()`。
     /// # 注意
     /// 这个函数不会改变`task_status`，你应该手动改变它以保持一致性。
     pub fn try_wake_interruptible(
@@ -172,7 +185,7 @@ impl TaskManager {
     ) -> Result<(), WaitQueueError> {
         // 从可中断队列中删除指定任务
         self.drop_interruptible(&task);
-        // 如果任务不在就绪队列中，将其加入就绪队列
+        // 如果任务不在就绪队列中，将其加入CFS就绪队列
         if self.find_by_pid(task.pid.0).is_none() {
             self.add(task);
             Ok(())
@@ -182,9 +195,9 @@ impl TaskManager {
     }
     #[allow(unused)]
     /// 调试方法
-    /// 打印就绪队列中的任务ID
+    /// 打印CFS就绪队列中的任务ID
     pub fn show_ready(&self) {
-        self.ready_queue.iter().for_each(|task| {
+        self.cfs_rq.iter().for_each(|task| {
             log::error!("[show_ready] pid: {}", task.pid.0);
         })
     }
@@ -231,10 +244,9 @@ impl TaskManager {
             return local_released;
         }
 
-        // 2. 遍历就绪队列 (反向遍历，优先牺牲最近最少使用的)
-        for task in self.ready_queue
+        // 2. 遍历CFS就绪队列 (遍历所有任务，按vruntime顺序)
+        for task in self.cfs_rq
             .iter()
-            .rev()
             .filter(|task| self.active_tracker.check_active(task.pid.0))
         {
             let released = task.vm.lock().do_shallow_clean();

@@ -355,6 +355,48 @@ impl CfsRunQueue {
             .cloned()
     }
 
+    /// Remove all tasks with a given TGID (for thread group exit)
+    /// Returns a Vec of removed tasks
+    pub fn remove_by_tgid(&mut self, tgid: usize) -> Vec<Arc<TaskControlBlock>> {
+        let mut removed = Vec::new();
+        let keys_to_remove: Vec<_> = self.tasks
+            .iter()
+            .filter(|(_, task)| task.tgid == tgid)
+            .map(|(key, _)| *key)
+            .collect();
+        
+        for key in keys_to_remove {
+            if let Some(task) = self.tasks.remove(&key) {
+                // Update accounting
+                let weight = task.acquire_inner_lock().sched_entity.weight as u64;
+                self.total_weight = self.total_weight.saturating_sub(weight);
+                self.nr_running = self.nr_running.saturating_sub(1);
+                removed.push(task);
+            }
+        }
+        removed
+    }
+
+    /// Retain only tasks that satisfy the predicate
+    pub fn retain<F>(&mut self, mut f: F) 
+    where
+        F: FnMut(&Arc<TaskControlBlock>) -> bool
+    {
+        let keys_to_remove: Vec<_> = self.tasks
+            .iter()
+            .filter(|(_, task)| !f(task))
+            .map(|(key, _)| *key)
+            .collect();
+        
+        for key in keys_to_remove {
+            if let Some(task) = self.tasks.remove(&key) {
+                let weight = task.acquire_inner_lock().sched_entity.weight as u64;
+                self.total_weight = self.total_weight.saturating_sub(weight);
+                self.nr_running = self.nr_running.saturating_sub(1);
+            }
+        }
+    }
+
     /// Get all tasks (for debugging)
     pub fn iter(&self) -> impl Iterator<Item = &Arc<TaskControlBlock>> {
         self.tasks.values()

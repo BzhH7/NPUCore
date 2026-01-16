@@ -10,6 +10,7 @@ all: $(ARCHS)
 
 $(ARCHS):
 	@echo "Building for ARCH=$@"
+# 	make -f make/rv64.mk test
 	make -f make/la_board/la64board.mk all BLK_MODE=mem BOARD=2k1000
 # 	make -f make/la_board/la64board.mk run-inner BLK_MODE=mem BOARD=2k1000
 

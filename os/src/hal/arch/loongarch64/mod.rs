@@ -37,7 +37,7 @@ pub use kern_stack::{kstack_alloc, trap_cx_bottom_from_tid, ustack_bottom_from_t
 pub use register::*;
 mod kern_stack;
 mod la_libc_import;
-mod register;
+pub mod register;
 mod tlb;
 extern "C" {
     pub fn srfill();
@@ -74,6 +74,10 @@ pub fn bootstrap_init() {
     if CPUId::read().get_core_id() != 0 {
         loop {}
     };
+
+    // 初始化时钟频率 (必须在任何timer相关操作前完成)
+    get_timer_freq_first_time();
+
     ECfg::empty()
         .set_line_based_interrupt_vector(LineBasedInterrupt::TIMER)
         .write();
@@ -124,6 +128,9 @@ pub fn bootstrap_init() {
 
     println!("[kernel] UART address: {:#x}", UART_BASE);
     println!("[bootstrap_init] {:?}", PRCfg1::read());
+
+    // 启用定时器中断 (用于任务调度和sleep唤醒)
+    trap::enable_timer_interrupt();
 }
 
 pub fn disable_interrupts() -> bool {

@@ -1272,3 +1272,90 @@ pub fn sys_madvise(addr: usize, length: usize, advice: u32) -> isize {
     // info!("[sys_madvise] addr: {}, length: {}, advice: {}", addr, length, advice);
     SUCCESS
 }
+
+/// Priority target types for getpriority/setpriority syscalls
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrioWhich {
+    /// Process priority
+    Process = 0,
+    /// Process group priority
+    Pgrp = 1,
+    /// User priority
+    User = 2,
+}
+
+/// Set process scheduling priority (nice value)
+/// 
+/// # Arguments
+/// * `which` - Target type: PRIO_PROCESS (0), PRIO_PGRP (1), PRIO_USER (2)
+/// * `who` - Target identifier (0 = current process/group/user)
+/// * `prio` - New priority value (nice value, -20 to 19)
+/// 
+/// # Returns
+/// * 0 on success
+/// * Negative errno on error
+pub fn sys_setpriority(which: i32, who: i32, prio: i32) -> isize {
+    // Currently only support PRIO_PROCESS with who=0 (current process)
+    if which != PrioWhich::Process as i32 {
+        warn!("[sys_setpriority] only PRIO_PROCESS supported, got which={}", which);
+        return EINVAL;
+    }
+    
+    let task = if who == 0 {
+        current_task().unwrap()
+    } else {
+        match find_task_by_pid(who as usize) {
+            Some(t) => t,
+            None => return ESRCH,
+        }
+    };
+    
+    // Clamp nice value to valid range [-20, 19]
+    let nice = (prio as i8).clamp(-20, 19);
+    
+    {
+        let mut inner = task.acquire_inner_lock();
+        inner.sched_entity.set_nice(nice);
+    }
+    
+    info!("[sys_setpriority] pid={} nice set to {}", task.pid.0, nice);
+    SUCCESS
+}
+
+/// Get process scheduling priority (nice value)
+/// 
+/// # Arguments
+/// * `which` - Target type: PRIO_PROCESS (0), PRIO_PGRP (1), PRIO_USER (2)
+/// * `who` - Target identifier (0 = current process/group/user)
+/// 
+/// # Returns
+/// * Nice value (20 - actual_nice to handle negative values)
+/// * Negative errno on error
+/// 
+/// Note: Linux returns 20-nice to make the range [1, 40] instead of [-20, 19]
+pub fn sys_getpriority(which: i32, who: i32) -> isize {
+    // Currently only support PRIO_PROCESS with who=0 (current process)
+    if which != PrioWhich::Process as i32 {
+        warn!("[sys_getpriority] only PRIO_PROCESS supported, got which={}", which);
+        return EINVAL;
+    }
+    
+    let task = if who == 0 {
+        current_task().unwrap()
+    } else {
+        match find_task_by_pid(who as usize) {
+            Some(t) => t,
+            None => return ESRCH,
+        }
+    };
+    
+    let nice = {
+        let inner = task.acquire_inner_lock();
+        inner.sched_entity.nice
+    };
+    
+    // Linux returns 20 - nice to make the range [1, 40]
+    // This allows distinguishing between error (negative) and valid values (positive)
+    (20 - nice as i32) as isize
+}

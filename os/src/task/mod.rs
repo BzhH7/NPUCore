@@ -71,11 +71,14 @@ pub fn suspend_current_and_run_next() {
         
         schedule(task_cx_ptr);
         
-        // Debug: check ra after resuming from schedule
-        let ra_after: usize;
-        unsafe { core::arch::asm!("mv {}, ra", out(reg) ra_after); }
-        if ra_after == 0 {
-            panic!("[CPU {}] suspend_current_and_run_next: ra=0 after schedule()!", cpu_id);
+        // Debug: check ra after resuming from schedule (RISC-V only)
+        #[cfg(target_arch = "riscv64")]
+        {
+            let ra_after: usize;
+            unsafe { core::arch::asm!("mv {}, ra", out(reg) ra_after); }
+            if ra_after == 0 {
+                panic!("[CPU {}] suspend_current_and_run_next: ra=0 after schedule()!", cpu_id);
+            }
         }
     }
 }
@@ -248,15 +251,10 @@ pub fn exit_group_and_run_next(exit_code: u32) -> ! {
     
     for manager_mutex in TASK_MANAGERS.iter() {
         let mut manager = manager_mutex.lock();
-        let mut remain = manager.ready_queue.len();
-        while let Some(task) = manager.ready_queue.pop_front() {
-            if task.tgid == tgid {
-                exit_list.push_back(task);
-            } else {
-                manager.ready_queue.push_back(task);
-            }
-            remain -= 1;
-            if remain == 0 { break; }
+        // 从CFS队列中移除同一线程组的任务
+        let removed_tasks = manager.cfs_rq.remove_by_tgid(tgid);
+        for task in removed_tasks {
+            exit_list.push_back(task);
         }
         
         let mut remain = manager.interruptible_queue.len();

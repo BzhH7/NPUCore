@@ -367,6 +367,14 @@ fn wrap_sigreturn(_a: &SyscallArgs) -> isize {
     sys_sigreturn()
 }
 
+fn wrap_setpriority(a: &SyscallArgs) -> isize {
+    sys_setpriority(a.arg_i32(0), a.arg_i32(1), a.arg_i32(2))
+}
+
+fn wrap_getpriority(a: &SyscallArgs) -> isize {
+    sys_getpriority(a.arg_i32(0), a.arg_i32(1))
+}
+
 fn wrap_times(a: &SyscallArgs) -> isize {
     sys_times(a.arg_mut_ptr(0))
 }
@@ -629,6 +637,8 @@ pub fn dispatch_syscall(id: usize, args: [usize; 6]) -> Option<(&'static str, is
         SYSCALL_SIGPROCMASK => ("sigprocmask", Some(wrap_sigprocmask)),
         SYSCALL_SIGTIMEDWAIT => ("sigtimedwait", Some(wrap_sigtimedwait)),
         SYSCALL_SIGRETURN => ("sigreturn", Some(wrap_sigreturn)),
+        SYSCALL_SETPRIORITY => ("setpriority", Some(wrap_setpriority)),
+        SYSCALL_GETPRIORITY => ("getpriority", Some(wrap_getpriority)),
         SYSCALL_TIMES => ("times", Some(wrap_times)),
         SYSCALL_SETPGID => ("setpgid", Some(wrap_setpgid)),
         SYSCALL_GETPGID => ("getpgid", Some(wrap_getpgid)),
