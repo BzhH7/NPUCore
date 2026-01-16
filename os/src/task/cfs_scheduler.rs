@@ -109,6 +109,48 @@ const NICE_TO_INV_WEIGHT: [u64; 40] = [
 // Scheduler Entity
 // ============================================================================
 
+/// Scheduling policy for multi-level scheduling framework
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SchedPolicy {
+    /// Normal CFS scheduling (SCHED_OTHER/SCHED_NORMAL)
+    Normal = 0,
+    /// FIFO real-time scheduling (SCHED_FIFO)
+    Fifo = 1,
+    /// Round-robin real-time scheduling (SCHED_RR)
+    RoundRobin = 2,
+    /// Batch scheduling (SCHED_BATCH) - treated as CFS
+    Batch = 3,
+    /// Idle scheduling (SCHED_IDLE) - lowest priority
+    Idle = 5,
+}
+
+impl Default for SchedPolicy {
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+
+impl SchedPolicy {
+    /// Check if this is a real-time policy
+    #[inline]
+    pub fn is_realtime(&self) -> bool {
+        matches!(self, Self::Fifo | Self::RoundRobin)
+    }
+    
+    /// Convert from raw policy number (Linux compatible)
+    pub fn from_raw(policy: u32) -> Option<Self> {
+        match policy {
+            0 => Some(Self::Normal),
+            1 => Some(Self::Fifo),
+            2 => Some(Self::RoundRobin),
+            3 => Some(Self::Batch),
+            5 => Some(Self::Idle),
+            _ => None,
+        }
+    }
+}
+
 /// Scheduling statistics and state for a task
 #[derive(Debug, Clone, Copy)]
 pub struct SchedEntity {
@@ -124,6 +166,14 @@ pub struct SchedEntity {
     pub exec_start: u64,
     /// Previous total runtime (for delta calculation)
     pub prev_sum_exec_runtime: u64,
+    /// Last CPU this task ran on (for wake-up affinity)
+    pub last_cpu: usize,
+    /// Scheduling policy (Normal, Fifo, RR, etc.)
+    pub policy: SchedPolicy,
+    /// Real-time priority (1-99, higher is more important)
+    pub rt_priority: u8,
+    /// CPU affinity mask (bitmask of allowed CPUs)
+    pub cpu_affinity: usize,
 }
 
 impl Default for SchedEntity {
@@ -135,6 +185,10 @@ impl Default for SchedEntity {
             sum_exec_runtime: 0,
             exec_start: 0,
             prev_sum_exec_runtime: 0,
+            last_cpu: 0,
+            policy: SchedPolicy::default(),
+            rt_priority: 0,
+            cpu_affinity: usize::MAX, // All CPUs allowed by default
         }
     }
 }
@@ -147,6 +201,42 @@ impl SchedEntity {
             weight: nice_to_weight(nice),
             ..Default::default()
         }
+    }
+    
+    /// Create new scheduling entity with RT policy and priority
+    pub fn new_rt(policy: SchedPolicy, priority: u8) -> Self {
+        Self {
+            policy,
+            rt_priority: priority.min(99).max(1),
+            ..Default::default()
+        }
+    }
+    
+    /// Set the scheduling policy
+    pub fn set_policy(&mut self, policy: SchedPolicy, priority: u8) {
+        self.policy = policy;
+        if policy.is_realtime() {
+            self.rt_priority = priority.min(99).max(1);
+        } else {
+            self.rt_priority = 0;
+        }
+    }
+    
+    /// Update last CPU this task ran on
+    #[inline]
+    pub fn set_last_cpu(&mut self, cpu: usize) {
+        self.last_cpu = cpu;
+    }
+    
+    /// Check if task is allowed to run on given CPU
+    #[inline]
+    pub fn can_run_on(&self, cpu: usize) -> bool {
+        (self.cpu_affinity & (1 << cpu)) != 0
+    }
+    
+    /// Set CPU affinity mask
+    pub fn set_affinity(&mut self, mask: usize) {
+        self.cpu_affinity = mask;
     }
 
     /// Update nice value and recalculate weight

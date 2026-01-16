@@ -1359,3 +1359,237 @@ pub fn sys_getpriority(which: i32, who: i32) -> isize {
     // This allows distinguishing between error (negative) and valid values (positive)
     (20 - nice as i32) as isize
 }
+
+// ============================================================================
+// Scheduler Syscalls for Multi-level Scheduling Framework
+// ============================================================================
+
+use crate::task::cfs_scheduler::SchedPolicy;
+use crate::config::MAX_CPU_NUM;
+
+/// sched_param structure for sched_setscheduler/sched_getscheduler
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SchedParam {
+    pub sched_priority: i32,
+}
+
+/// Set scheduling policy and parameters
+/// 
+/// # Arguments
+/// * `pid` - Process ID (0 = current)
+/// * `policy` - Scheduling policy (SCHED_NORMAL=0, SCHED_FIFO=1, SCHED_RR=2, etc.)
+/// * `param` - Pointer to sched_param structure
+/// 
+/// # Returns
+/// * 0 on success
+/// * Negative errno on error
+pub fn sys_sched_setscheduler(pid: usize, policy: u32, param: *const SchedParam) -> isize {
+    let task = if pid == 0 {
+        current_task().unwrap()
+    } else {
+        match find_task_by_pid(pid) {
+            Some(t) => t,
+            None => return ESRCH,
+        }
+    };
+    
+    let sched_policy = match SchedPolicy::from_raw(policy) {
+        Some(p) => p,
+        None => {
+            warn!("[sys_sched_setscheduler] invalid policy: {}", policy);
+            return EINVAL;
+        }
+    };
+    
+    let priority = if !param.is_null() {
+        let token = current_user_token();
+        match try_get_from_user::<SchedParam>(token, param) {
+            Ok(Some(p)) => p.sched_priority as u8,
+            Ok(None) => 0,
+            Err(_) => return EFAULT,
+        }
+    } else {
+        0
+    };
+    
+    // Validate RT priority
+    if sched_policy.is_realtime() {
+        if priority < 1 || priority > 99 {
+            return EINVAL;
+        }
+    }
+    
+    {
+        let mut inner = task.acquire_inner_lock();
+        inner.sched_entity.set_policy(sched_policy, priority);
+    }
+    
+    info!("[sys_sched_setscheduler] pid={} policy={:?} prio={}", 
+          task.pid.0, sched_policy, priority);
+    SUCCESS
+}
+
+/// Get scheduling policy
+pub fn sys_sched_getscheduler(pid: usize) -> isize {
+    let task = if pid == 0 {
+        current_task().unwrap()
+    } else {
+        match find_task_by_pid(pid) {
+            Some(t) => t,
+            None => return ESRCH,
+        }
+    };
+    
+    let policy = {
+        let inner = task.acquire_inner_lock();
+        inner.sched_entity.policy
+    };
+    
+    policy as isize
+}
+
+/// Set scheduling parameters
+pub fn sys_sched_setparam(pid: usize, param: *const SchedParam) -> isize {
+    let task = if pid == 0 {
+        current_task().unwrap()
+    } else {
+        match find_task_by_pid(pid) {
+            Some(t) => t,
+            None => return ESRCH,
+        }
+    };
+    
+    if param.is_null() {
+        return EINVAL;
+    }
+    
+    let token = current_user_token();
+    let priority = match try_get_from_user::<SchedParam>(token, param) {
+        Ok(Some(p)) => p.sched_priority as u8,
+        Ok(None) => return EINVAL,
+        Err(_) => return EFAULT,
+    };
+    
+    {
+        let mut inner = task.acquire_inner_lock();
+        if inner.sched_entity.policy.is_realtime() {
+            inner.sched_entity.rt_priority = priority.clamp(1, 99);
+        }
+    }
+    
+    SUCCESS
+}
+
+/// Get scheduling parameters
+pub fn sys_sched_getparam(pid: usize, param: *mut SchedParam) -> isize {
+    let task = if pid == 0 {
+        current_task().unwrap()
+    } else {
+        match find_task_by_pid(pid) {
+            Some(t) => t,
+            None => return ESRCH,
+        }
+    };
+    
+    if param.is_null() {
+        return EINVAL;
+    }
+    
+    let priority = {
+        let inner = task.acquire_inner_lock();
+        inner.sched_entity.rt_priority as i32
+    };
+    
+    let token = current_user_token();
+    let sched_param = SchedParam { sched_priority: priority };
+    if copy_to_user(token, &sched_param, param).is_err() {
+        return EFAULT;
+    }
+    
+    SUCCESS
+}
+
+/// Set CPU affinity mask
+pub fn sys_sched_setaffinity(pid: usize, cpusetsize: usize, mask: *const usize) -> isize {
+    let task = if pid == 0 {
+        current_task().unwrap()
+    } else {
+        match find_task_by_pid(pid) {
+            Some(t) => t,
+            None => return ESRCH,
+        }
+    };
+    
+    if mask.is_null() || cpusetsize == 0 {
+        return EINVAL;
+    }
+    
+    let token = current_user_token();
+    let affinity_mask = match try_get_from_user::<usize>(token, mask) {
+        Ok(Some(m)) => m,
+        Ok(None) => return EINVAL, // Should not happen since we checked is_null
+        Err(_) => return EFAULT,
+    };
+    
+    // Validate that at least one valid CPU is set
+    let valid_cpus = (1usize << MAX_CPU_NUM) - 1;
+    if (affinity_mask & valid_cpus) == 0 {
+        return EINVAL;
+    }
+    
+    {
+        let mut inner = task.acquire_inner_lock();
+        inner.sched_entity.set_affinity(affinity_mask);
+    }
+    
+    info!("[sys_sched_setaffinity] pid={} mask={:#x}", task.pid.0, affinity_mask);
+    SUCCESS
+}
+
+/// Get CPU affinity mask
+pub fn sys_sched_getaffinity(pid: usize, cpusetsize: usize, mask: *mut usize) -> isize {
+    let task = if pid == 0 {
+        current_task().unwrap()
+    } else {
+        match find_task_by_pid(pid) {
+            Some(t) => t,
+            None => return ESRCH,
+        }
+    };
+    
+    if mask.is_null() || cpusetsize == 0 {
+        return EINVAL;
+    }
+    
+    let affinity = {
+        let inner = task.acquire_inner_lock();
+        inner.sched_entity.cpu_affinity
+    };
+    
+    let token = current_user_token();
+    if copy_to_user(token, &affinity, mask).is_err() {
+        return EFAULT;
+    }
+    
+    // Return the size of the mask in bytes
+    core::mem::size_of::<usize>() as isize
+}
+
+/// Get maximum priority for a policy
+pub fn sys_sched_get_priority_max(policy: i32) -> isize {
+    match policy {
+        0 | 3 | 5 => 0,      // SCHED_NORMAL, SCHED_BATCH, SCHED_IDLE
+        1 | 2 => 99,         // SCHED_FIFO, SCHED_RR
+        _ => EINVAL,
+    }
+}
+
+/// Get minimum priority for a policy
+pub fn sys_sched_get_priority_min(policy: i32) -> isize {
+    match policy {
+        0 | 3 | 5 => 0,      // SCHED_NORMAL, SCHED_BATCH, SCHED_IDLE
+        1 | 2 => 1,          // SCHED_FIFO, SCHED_RR
+        _ => EINVAL,
+    }
+}

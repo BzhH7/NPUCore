@@ -103,6 +103,18 @@ pub const SYSCALL_MEMBARRIER: usize = 283;
 pub const SYSCALL_COPY_FILE_RANGE: usize = 285;
 pub const SYSCALL_STATX: usize = 291;
 pub const SYSCALL_FACCESSAT2: usize = 439;
+
+// Scheduler syscalls
+pub const SYSCALL_SCHED_SETPARAM: usize = 118;
+pub const SYSCALL_SCHED_GETPARAM: usize = 119;
+pub const SYSCALL_SCHED_SETSCHEDULER: usize = 120;
+pub const SYSCALL_SCHED_GETSCHEDULER: usize = 121;
+pub const SYSCALL_SCHED_GETAFFINITY: usize = 123;
+pub const SYSCALL_SCHED_SETAFFINITY: usize = 122;
+pub const SYSCALL_SCHED_YIELD: usize = 124;
+pub const SYSCALL_SCHED_GET_PRIORITY_MAX: usize = 125;
+pub const SYSCALL_SCHED_GET_PRIORITY_MIN: usize = 126;
+
 // Not standard POSIX sys_call
 pub const SYSCALL_LS: usize = 500;
 pub const SYSCALL_SHUTDOWN: usize = 501;

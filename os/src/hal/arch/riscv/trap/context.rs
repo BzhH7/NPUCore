@@ -106,7 +106,17 @@ impl TrapContext {
             set_spp(SPP::User);
         }
         // Re-read sstatus after modification
-        let sstatus_after = sstatus::read();
+        let mut sstatus_after = sstatus::read();
+        
+        // Lazy FPU: Disable FPU by default (set FS=Off)
+        // This will cause IllegalInstruction trap on first FPU use,
+        // which then enables FPU lazily
+        // NOTE: We keep FPU enabled for now to avoid breaking existing code
+        // To fully enable Lazy FPU, uncomment the following:
+        // let sstatus_bits = unsafe { core::mem::transmute::<_, usize>(sstatus_after) };
+        // let sstatus_fpu_off = sstatus_bits & !0x6000; // Clear FS bits (set to Off)
+        // sstatus_after = unsafe { core::mem::transmute::<_, Sstatus>(sstatus_fpu_off) };
+        
         let mut cx = Self {
             gp: GeneralRegs::default(),
             fp: FloatRegs::default(),

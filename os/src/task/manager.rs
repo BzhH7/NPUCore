@@ -1,6 +1,6 @@
 /*
     此文件用于管理任务的调度
-    使用CFS (Completely Fair Scheduler) 调度算法
+    使用多级调度框架：RT (FIFO/RR) -> CFS -> Idle
 */
 use core::cmp::Ordering;
 
@@ -13,7 +13,8 @@ use crate::timer::TimeSpec;
 use crate::config::MAX_CPU_NUM;
 use crate::utils::InterruptGuard;
 
-use super::cfs_scheduler::CfsRunQueue;
+use super::cfs_scheduler::{CfsRunQueue, SchedPolicy};
+use super::sched_class::{RtRunQueue, IdleRunQueue, get_sched_class, SchedClass};
 use super::{current_task, TaskControlBlock};
 use alloc::collections::{BinaryHeap, VecDeque};
 use alloc::sync::{Arc, Weak};
@@ -62,10 +63,14 @@ impl ActiveTracker {
 }
 
 #[cfg(feature = "oom_handler")]
-/// 任务管理器 (使用CFS调度)
+/// 任务管理器 (多级调度：RT -> CFS -> Idle)
 pub struct TaskManager {
+    /// RT运行队列 (FIFO/RR，最高优先级)
+    pub rt_rq: RtRunQueue,
     /// CFS运行队列，用于存储就绪态任务
     pub cfs_rq: CfsRunQueue,
+    /// Idle运行队列 (最低优先级)
+    pub idle_rq: IdleRunQueue,
     /// 一个双端队列，用于存储可中断状态任务
     pub interruptible_queue: VecDeque<Arc<TaskControlBlock>>,
     /// 任务激活状态跟踪器，用于跟踪任务的激活状态，并在OOM时释放内存
@@ -75,18 +80,24 @@ pub struct TaskManager {
 
 #[cfg(not(feature = "oom_handler"))]
 pub struct TaskManager {
+    /// RT运行队列 (FIFO/RR，最高优先级)
+    pub rt_rq: RtRunQueue,
     /// CFS运行队列，用于存储就绪态任务
     pub cfs_rq: CfsRunQueue,
+    /// Idle运行队列 (最低优先级)
+    pub idle_rq: IdleRunQueue,
     pub interruptible_queue: VecDeque<Arc<TaskControlBlock>>,
 }
 
-/// CFS调度器
+/// 多级调度器
 impl TaskManager {
     #[cfg(feature = "oom_handler")]
     /// 构造函数
     pub fn new() -> Self {
         Self {
+            rt_rq: RtRunQueue::new(),
             cfs_rq: CfsRunQueue::new(),
+            idle_rq: IdleRunQueue::new(),
             interruptible_queue: VecDeque::new(),
             active_tracker: ActiveTracker::new(),
         }
@@ -94,32 +105,81 @@ impl TaskManager {
     #[cfg(not(feature = "oom_handler"))]
     pub fn new() -> Self {
         Self {
+            rt_rq: RtRunQueue::new(),
             cfs_rq: CfsRunQueue::new(),
+            idle_rq: IdleRunQueue::new(),
             interruptible_queue: VecDeque::new(),
         }
     }
-    /// 添加一个任务到CFS就绪队列
+    /// 添加一个任务到对应的就绪队列（根据调度策略）
     pub fn add(&mut self, task: Arc<TaskControlBlock>) {
         let mut inner = task.acquire_inner_lock();
-        let is_new = inner.sched_entity.sum_exec_runtime == 0;
-        self.cfs_rq.enqueue(task.clone(), &mut inner.sched_entity, is_new);
+        let sched_class = get_sched_class(&inner.sched_entity);
+        
+        match sched_class {
+            SchedClass::Rt => {
+                self.rt_rq.enqueue(task.clone(), &inner.sched_entity);
+            }
+            SchedClass::Cfs => {
+                let is_new = inner.sched_entity.sum_exec_runtime == 0;
+                self.cfs_rq.enqueue(task.clone(), &mut inner.sched_entity, is_new);
+            }
+            SchedClass::Idle => {
+                self.idle_rq.enqueue(task.clone());
+            }
+        }
         drop(inner);
     }
-    /// 从CFS就绪队列中取出下一个任务(vruntime最小的任务)
+    /// 从就绪队列中取出下一个任务（按优先级：RT -> CFS -> Idle）
     #[cfg(feature = "oom_handler")]
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
-        match self.cfs_rq.pick_next() {
-            Some(task) => {
-                // 标记任务为激活状态
-                self.active_tracker.mark_active(task.pid.0);
-                Some(task)
-            }
-            None => None,
+        // 1. 先检查RT队列
+        if let Some(task) = self.rt_rq.pick_next() {
+            self.active_tracker.mark_active(task.pid.0);
+            return Some(task);
         }
+        // 2. 再检查CFS队列
+        if let Some(task) = self.cfs_rq.pick_next() {
+            self.active_tracker.mark_active(task.pid.0);
+            return Some(task);
+        }
+        // 3. 最后检查Idle队列
+        if let Some(task) = self.idle_rq.pick_next() {
+            self.active_tracker.mark_active(task.pid.0);
+            return Some(task);
+        }
+        None
     }
     #[cfg(not(feature = "oom_handler"))]
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
-        self.cfs_rq.pick_next()
+        // 1. 先检查RT队列
+        if let Some(task) = self.rt_rq.pick_next() {
+            return Some(task);
+        }
+        // 2. 再检查CFS队列
+        if let Some(task) = self.cfs_rq.pick_next() {
+            return Some(task);
+        }
+        // 3. 最后检查Idle队列
+        self.idle_rq.pick_next()
+    }
+    
+    /// 尝试从CFS队列偷取一个任务（用于Work Stealing）
+    /// 返回vruntime最大的任务（即最不紧急的任务）
+    pub fn steal_from_cfs(&mut self) -> Option<Arc<TaskControlBlock>> {
+        // 偷取CFS队列中vruntime最大的任务
+        // 这需要CfsRunQueue提供pop_last方法
+        // 暂时使用pick_next，后续可以优化
+        if self.cfs_rq.len() >= 2 {
+            self.cfs_rq.pick_next()
+        } else {
+            None
+        }
+    }
+    
+    /// 获取总任务数
+    pub fn total_count(&self) -> usize {
+        self.rt_rq.len() + self.cfs_rq.len() + self.idle_rq.len()
     }
     /// 添加一个任务到可中断队列
     pub fn add_interruptible(&mut self, task: Arc<TaskControlBlock>) {
@@ -131,33 +191,49 @@ impl TaskManager {
             // 使用retain过滤掉与指定任务相同的任务
             .retain(|task_in_queue| Arc::as_ptr(task_in_queue) != Arc::as_ptr(task));
     }
-    /// 根据pid查找任务
+    /// 根据pid查找任务（搜索所有队列）
     pub fn find_by_pid(&self, pid: usize) -> Option<Arc<TaskControlBlock>> {
-        // 先在CFS队列中查找
+        // 先在RT队列中查找
+        if let Some(task) = self.rt_rq.find_by_pid(pid) {
+            return Some(task);
+        }
+        // 再在CFS队列中查找
         if let Some(task) = self.cfs_rq.find_by_pid(pid) {
             return Some(task);
         }
-        // 再在可中断队列中查找
+        // 再在Idle队列中查找
+        if let Some(task) = self.idle_rq.find_by_pid(pid) {
+            return Some(task);
+        }
+        // 最后在可中断队列中查找
         self.interruptible_queue
             .iter()
             .find(|task| task.pid.0 == pid)
             .cloned()
     }
-    /// 根据tgid(线程组id)查找任务
+    /// 根据tgid(线程组id)查找任务（搜索所有队列）
     pub fn find_by_tgid(&self, tgid: usize) -> Option<Arc<TaskControlBlock>> {
-        // 先在CFS队列中查找
+        // 先在RT队列中查找
+        if let Some(task) = self.rt_rq.find_by_tgid(tgid) {
+            return Some(task);
+        }
+        // 再在CFS队列中查找
         if let Some(task) = self.cfs_rq.find_by_tgid(tgid) {
             return Some(task);
         }
-        // 再在可中断队列中查找
+        // 再在Idle队列中查找
+        if let Some(task) = self.idle_rq.find_by_tgid(tgid) {
+            return Some(task);
+        }
+        // 最后在可中断队列中查找
         self.interruptible_queue
             .iter()
             .find(|task| task.tgid == tgid)
             .cloned()
     }
-    /// 就绪队列中任务数量
+    /// 就绪队列中任务数量（所有调度类）
     pub fn ready_count(&self) -> u16 {
-        self.cfs_rq.len() as u16
+        (self.rt_rq.len() + self.cfs_rq.len() + self.idle_rq.len()) as u16
     }
     /// 可中断队列中任务数量
     pub fn interruptible_count(&self) -> u16 {
@@ -283,14 +359,42 @@ lazy_static! {
     };
 }
 
-/// 添加一个任务到任务管理器
+/// 添加一个任务到任务管理器（支持Wake-up Affinity）
 pub fn add_task(task: Arc<TaskControlBlock>) {
     let _guard = InterruptGuard::new();
-    let cpu_id = current_cpu_id();
-    TASK_MANAGERS[cpu_id].lock().add(task);
+    
+    // Wake-up Affinity: 优先使用任务上次运行的CPU
+    let last_cpu = {
+        let inner = task.acquire_inner_lock();
+        inner.sched_entity.last_cpu
+    };
+    
+    let current_cpu = current_cpu_id();
+    
+    // 如果last_cpu有效且可用，尝试将任务添加到last_cpu
+    if last_cpu < MAX_CPU_NUM && last_cpu != current_cpu {
+        // 使用try_lock避免死锁
+        if let Some(mut manager) = TASK_MANAGERS[last_cpu].try_lock() {
+            manager.add(task);
+            return;
+        }
+    }
+    
+    // Fallback: 添加到当前CPU
+    TASK_MANAGERS[current_cpu].lock().add(task);
 }
 
-/// 从任务管理器中取出一个任务
+/// 添加任务到指定CPU的队列（用于work stealing后的re-add）
+pub fn add_task_to_cpu(task: Arc<TaskControlBlock>, cpu_id: usize) {
+    let _guard = InterruptGuard::new();
+    if cpu_id < MAX_CPU_NUM {
+        TASK_MANAGERS[cpu_id].lock().add(task);
+    } else {
+        TASK_MANAGERS[current_cpu_id()].lock().add(task);
+    }
+}
+
+/// 从任务管理器中取出一个任务（支持Try-Lock Work Stealing）
 pub fn fetch_task() -> Option<Arc<TaskControlBlock>> {
     let _guard = InterruptGuard::new();
     let cpu_id = current_cpu_id();
@@ -301,26 +405,26 @@ pub fn fetch_task() -> Option<Arc<TaskControlBlock>> {
         return task;
     }
 
-    // 2. Work Stealing: DISABLED FOR DEBUGGING
-    // 【调试】暂时禁用工作窃取以排查问题
-    /*
+    // 2. Work Stealing with Try-Lock
+    // 使用try_lock避免死锁，如果其他核正在忙就跳过
     for i in 0..MAX_CPU_NUM {
         if i == cpu_id {
             continue;
         }
-        // 使用 try_lock 避免死锁，如果别的核正在忙，就跳过
+        // 使用try_lock避免死锁
         if let Some(mut other_manager) = TASK_MANAGERS[i].try_lock() {
-            // 从别人的就绪队列后面偷一个 (pop_back)，减少与 owner (pop_front) 的冲突
-            if let Some(task) = other_manager.ready_queue.pop_back() {
-                // 注意：如果开启了 OOM handler，偷来的任务也需要标记 active
-                #[cfg(feature = "oom_handler")]
-                other_manager.active_tracker.mark_active(task.pid.0);
-                
-                return Some(task);
+            // 只在对方有足够任务时才偷取（避免饥饿）
+            if other_manager.total_count() >= 2 {
+                // 优先偷取CFS任务（RT任务优先级高，不适合偷取）
+                if let Some(task) = other_manager.steal_from_cfs() {
+                    #[cfg(feature = "oom_handler")]
+                    other_manager.active_tracker.mark_active(task.pid.0);
+                    
+                    return Some(task);
+                }
             }
         }
     }
-    */
     
     None
 }

@@ -123,6 +123,8 @@ pub fn run_tasks() {
                 task_inner.task_status = TaskStatus::Running;
                 // CFS: 记录任务开始执行的时间
                 task_inner.sched_entity.exec_start = get_time_ns() as u64;
+                // Wake-up Affinity: 记录任务当前运行的CPU
+                task_inner.sched_entity.set_last_cpu(cpu_id);
                 &task_inner.task_cx as *const TaskContext
             };
             

@@ -375,6 +375,39 @@ fn wrap_getpriority(a: &SyscallArgs) -> isize {
     sys_getpriority(a.arg_i32(0), a.arg_i32(1))
 }
 
+// Scheduler syscall wrappers
+fn wrap_sched_setscheduler(a: &SyscallArgs) -> isize {
+    sys_sched_setscheduler(a.arg(0), a.arg_u32(1), a.arg_ptr(2))
+}
+
+fn wrap_sched_getscheduler(a: &SyscallArgs) -> isize {
+    sys_sched_getscheduler(a.arg(0))
+}
+
+fn wrap_sched_setparam(a: &SyscallArgs) -> isize {
+    sys_sched_setparam(a.arg(0), a.arg_ptr(1))
+}
+
+fn wrap_sched_getparam(a: &SyscallArgs) -> isize {
+    sys_sched_getparam(a.arg(0), a.arg_mut_ptr(1))
+}
+
+fn wrap_sched_setaffinity(a: &SyscallArgs) -> isize {
+    sys_sched_setaffinity(a.arg(0), a.arg(1), a.arg_ptr(2))
+}
+
+fn wrap_sched_getaffinity(a: &SyscallArgs) -> isize {
+    sys_sched_getaffinity(a.arg(0), a.arg(1), a.arg_mut_ptr(2))
+}
+
+fn wrap_sched_get_priority_max(a: &SyscallArgs) -> isize {
+    sys_sched_get_priority_max(a.arg_i32(0))
+}
+
+fn wrap_sched_get_priority_min(a: &SyscallArgs) -> isize {
+    sys_sched_get_priority_min(a.arg_i32(0))
+}
+
 fn wrap_times(a: &SyscallArgs) -> isize {
     sys_times(a.arg_mut_ptr(0))
 }
@@ -639,6 +672,14 @@ pub fn dispatch_syscall(id: usize, args: [usize; 6]) -> Option<(&'static str, is
         SYSCALL_SIGRETURN => ("sigreturn", Some(wrap_sigreturn)),
         SYSCALL_SETPRIORITY => ("setpriority", Some(wrap_setpriority)),
         SYSCALL_GETPRIORITY => ("getpriority", Some(wrap_getpriority)),
+        SYSCALL_SCHED_SETPARAM => ("sched_setparam", Some(wrap_sched_setparam)),
+        SYSCALL_SCHED_GETPARAM => ("sched_getparam", Some(wrap_sched_getparam)),
+        SYSCALL_SCHED_SETSCHEDULER => ("sched_setscheduler", Some(wrap_sched_setscheduler)),
+        SYSCALL_SCHED_GETSCHEDULER => ("sched_getscheduler", Some(wrap_sched_getscheduler)),
+        SYSCALL_SCHED_SETAFFINITY => ("sched_setaffinity", Some(wrap_sched_setaffinity)),
+        SYSCALL_SCHED_GETAFFINITY => ("sched_getaffinity", Some(wrap_sched_getaffinity)),
+        SYSCALL_SCHED_GET_PRIORITY_MAX => ("sched_get_priority_max", Some(wrap_sched_get_priority_max)),
+        SYSCALL_SCHED_GET_PRIORITY_MIN => ("sched_get_priority_min", Some(wrap_sched_get_priority_min)),
         SYSCALL_TIMES => ("times", Some(wrap_times)),
         SYSCALL_SETPGID => ("setpgid", Some(wrap_setpgid)),
         SYSCALL_GETPGID => ("getpgid", Some(wrap_getpgid)),

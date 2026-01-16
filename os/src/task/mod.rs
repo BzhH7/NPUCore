@@ -4,6 +4,7 @@ mod elf;
 mod manager;
 pub mod pid;
 pub mod processor;
+pub mod sched_class;
 pub mod signal;
 pub mod state_machine;
 pub mod task;
