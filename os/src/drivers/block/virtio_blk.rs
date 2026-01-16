@@ -1,8 +1,9 @@
 use super::{BlockDevice, BLOCK_SZ};
 use crate::mm::{
-    frame_alloc, frame_dealloc, kernel_token, FrameTracker, PageTable, PageTableImpl, PhysAddr, PhysPageNum,
+    frame_alloc, frame_dealloc, frames_alloc, kernel_token, FrameTracker, PageTable, PageTableImpl, PhysAddr, PhysPageNum,
     StepByOne, VirtAddr,
 };
+use crate::config::{PAGE_SIZE, PAGE_SIZE_BITS};
 use alloc::{sync::Arc, vec::Vec};
 use lazy_static::*;
 use spin::Mutex;
@@ -31,7 +32,7 @@ impl BlockDevice for VirtIOBlock {
         for (i, chunk) in buf.chunks_mut(VIRTIO_BLK_SIZE).enumerate() {
             self.0
                 .lock()
-                .read_blocks(start_sector, chunk)
+                .read_blocks(start_sector + i, chunk)
                 .expect("Error when reading VirtIOBlk");
         }
     }
@@ -42,7 +43,7 @@ impl BlockDevice for VirtIOBlock {
         for (i, chunk) in buf.chunks(VIRTIO_BLK_SIZE).enumerate() {
             self.0
                 .lock()
-                .write_blocks(start_sector, chunk)
+                .write_blocks(start_sector + i, chunk)
                 .expect("Error when writing VirtIOBlk");
         }
     }
@@ -76,13 +77,36 @@ unsafe impl Hal for VirtioHal {
         NonNull::new(paddr as *mut u8).unwrap()
     }
 
-    unsafe fn share(buffer: NonNull<[u8]>, _direction: BufferDirection) -> usize {
-        let vaddr = buffer.as_ptr() as *mut u8 as usize;
-        virtio_virt_to_phys(VirtAddr(vaddr)).0
+    unsafe fn share(buffer: NonNull<[u8]>, direction: BufferDirection) -> usize {
+        let buffer_ref = buffer.as_ref();
+        let len = buffer_ref.len();
+        let pages = (len + PAGE_SIZE - 1) >> PAGE_SIZE_BITS;
+        let frames = frames_alloc(pages).expect("Failed to allocate DMA frames for share");
+        let pa_start = frames[0].ppn.start_addr().0;
+        // If writing to device, copy data to DMA buffer
+        if matches!(direction, BufferDirection::DriverToDevice | BufferDirection::Both) {
+            let dma_buf = core::slice::from_raw_parts_mut(pa_start as *mut u8, len);
+            dma_buf.copy_from_slice(buffer_ref);
+        }
+        QUEUE_FRAMES.lock().extend(frames);
+        pa_start
     }
 
-    unsafe fn unshare(_paddr: usize, _buffer: NonNull<[u8]>, _direction: BufferDirection) {
-        // No-op for identity mapping
+    unsafe fn unshare(paddr: usize, mut buffer: NonNull<[u8]>, direction: BufferDirection) {
+        let buffer_ref = buffer.as_mut();
+        let len = buffer_ref.len();
+        // If reading from device, copy data back from DMA buffer
+        if matches!(direction, BufferDirection::DeviceToDriver | BufferDirection::Both) {
+            let dma_buf = core::slice::from_raw_parts(paddr as *const u8, len);
+            buffer_ref.copy_from_slice(dma_buf);
+        }
+        // Deallocate DMA frames
+        let mut ppn = PhysAddr(paddr).floor();
+        let end_ppn = PhysAddr(paddr + len).ceil();
+        while ppn != end_ppn {
+            frame_dealloc(ppn);
+            ppn.step();
+        }
     }
 }
 
