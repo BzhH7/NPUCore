@@ -1,6 +1,16 @@
 /*
     此文件用于管理任务的调度
     使用多级调度框架：RT (FIFO/RR) -> CFS -> Idle
+    
+    【关于 Work Stealing】
+    参考 starry-mix 和 rocketos 的实现，两者都没有使用 work stealing：
+    - starry-mix: 使用静态 CPU 亲和性 + on_cpu 标志保护 task migration
+    - rocketos: 使用静态 CPU 绑定，任务完全不在 CPU 间移动
+    
+    我们选择禁用 work stealing，依靠 Wake-up Affinity 实现负载均衡：
+    - 任务唤醒时优先回到 last_cpu（利用缓存亲和性）
+    - 如果 last_cpu 忙，回退到当前 CPU
+    - 新任务通过 clone/fork 自然分布到不同 CPU
 */
 use core::cmp::Ordering;
 
@@ -13,9 +23,9 @@ use crate::timer::TimeSpec;
 use crate::config::MAX_CPU_NUM;
 use crate::utils::InterruptGuard;
 
-use super::cfs_scheduler::{CfsRunQueue, SchedPolicy};
+use super::cfs_scheduler::CfsRunQueue;
 use super::sched_class::{RtRunQueue, IdleRunQueue, get_sched_class, SchedClass};
-use super::{current_task, TaskControlBlock};
+use super::TaskControlBlock;
 use alloc::collections::{BinaryHeap, VecDeque};
 use alloc::sync::{Arc, Weak};
 use lazy_static::*;
@@ -410,72 +420,30 @@ pub fn fetch_task() -> Option<Arc<TaskControlBlock>> {
     let _guard = InterruptGuard::new();
     let cpu_id = current_cpu_id();
     
-    // 1. 尝试从本地获取
-    let task = TASK_MANAGERS[cpu_id].lock().fetch();
-    if task.is_some() {
-        return task;
-    }
-
-    // 2. Work Stealing with Try-Lock
-    // 使用try_lock避免死锁，如果其他核正在忙就跳过
-    for i in 0..MAX_CPU_NUM {
-        if i == cpu_id {
-            continue;
-        }
-        // 使用try_lock避免死锁
-        if let Some(mut other_manager) = TASK_MANAGERS[i].try_lock() {
-            // 只在对方有足够任务时才偷取（避免饥饿）
-            if other_manager.total_count() >= 2 {
-                // 优先偷取CFS任务（RT任务优先级高，不适合偷取）
-                // 使用新的带CPU亲和性检查的偷取方法
-                if let Some(task) = other_manager.steal_from_cfs_for_cpu(cpu_id) {
-                    #[cfg(feature = "oom_handler")]
-                    other_manager.active_tracker.mark_active(task.pid.0);
-                    
-                    // 【关键安全检查】在偷取后、切换前，再次验证任务上下文
-                    {
-                        let task_inner = task.acquire_inner_lock();
-                        let task_cx_ra = task_inner.task_cx.ra;
-                        let task_cx_sp = task_inner.task_cx.sp;
-                        
-                        // 检查 task_cx 是否有效
-                        if task_cx_ra == 0 || task_cx_ra < 0x80000000 {
-                            // 上下文无效，放回队列并跳过
-                            log::warn!("[WorkSteal] Skip task pid={} with invalid task_cx.ra={:#x}", 
-                                      task.pid.0, task_cx_ra);
-                            drop(task_inner);
-                            other_manager.add(task);
-                            continue;
-                        }
-                        
-                        if task_cx_sp == 0 || task_cx_sp < 0x80000000 {
-                            log::warn!("[WorkSteal] Skip task pid={} with invalid task_cx.sp={:#x}", 
-                                      task.pid.0, task_cx_sp);
-                            drop(task_inner);
-                            other_manager.add(task);
-                            continue;
-                        }
-                    }
-                    
-                    // 【关键修复】偷取任务后，必须更新 kernel_tp 为当前CPU ID
-                    // 否则任务返回用户态再陷入内核时，会使用错误的CPU ID
-                    {
-                        let mut task_inner = task.acquire_inner_lock();
-                        task_inner.get_trap_cx().kernel_tp = cpu_id;
-                        // 更新调度实体中的last_cpu
-                        task_inner.sched_entity.set_last_cpu(cpu_id);
-                    }
-                    
-                    // 内存屏障：确保kernel_tp的更新对其他CPU可见
-                    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-                    
-                    return Some(task);
-                }
-            }
-        }
+    // 【关键检查】验证 cpu_id 有效
+    if cpu_id >= MAX_CPU_NUM {
+        panic!("[fetch_task] Invalid cpu_id {} (tp register corrupted)!", cpu_id);
     }
     
-    None
+    // 1. 尝试从本地获取
+    let task = TASK_MANAGERS[cpu_id].lock().fetch();
+    // 返回本地任务或 None
+    // 
+    // 【关于 Work Stealing 的决定】
+    // 参考 starry-mix 和 rocketos 的实现，两者都没有使用 work stealing：
+    // - starry-mix: 使用静态 CPU 亲和性 + on_cpu 标志保护 task migration
+    // - rocketos: 使用静态 CPU 绑定，任务完全不在 CPU 间移动
+    // 
+    // Work stealing 在多核环境中容易引发竞态条件，特别是：
+    // 1. 上下文切换期间任务被偷取 → ra/sp 无效
+    // 2. kernel_tp 与实际 CPU 不匹配 → 后续 trap 处理错误
+    // 3. TrapContext 跨 CPU 访问的内存一致性问题
+    // 
+    // 我们选择禁用 work stealing，依靠 Wake-up Affinity 实现负载均衡：
+    // - 任务唤醒时优先回到 last_cpu（利用缓存亲和性）
+    // - 如果 last_cpu 忙，回退到当前 CPU
+    // - 新任务通过 clone/fork 自然分布到不同 CPU
+    task
 }
 
 #[cfg(feature = "oom_handler")]

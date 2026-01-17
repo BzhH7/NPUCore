@@ -1,4 +1,4 @@
-use super::{__switch, do_wake_expired};
+use super::__switch;
 use super::{fetch_task, add_task, sleep_interruptible, TaskStatus};
 use super::{TaskContext, TaskControlBlock};
 use super::task::TASK_NOT_RUNNING;
@@ -9,7 +9,7 @@ use lazy_static::*;
 use spin::Mutex;
 use core::arch::asm;
 use core::sync::atomic::Ordering;
-use crate::config::MAX_CPU_NUM; // 引入CPU数量配置
+use crate::config::MAX_CPU_NUM;
 use alloc::vec::Vec;
 
 /// 处理器对象
@@ -81,6 +81,12 @@ pub fn run_tasks() {
     loop {
         let cpu_id = current_cpu_id();
         
+        // 【关键检查】验证 tp 寄存器有效
+        // 如果 tp 无效，说明之前的上下文切换出了问题
+        if cpu_id >= MAX_CPU_NUM {
+            panic!("[run_tasks] Invalid cpu_id {} (tp register corrupted)!", cpu_id);
+        }
+        
         // 1. 【关键】获取锁之前必须关闭中断，防止中断处理函数重入导致死锁
         disable_interrupts();
 
@@ -91,6 +97,12 @@ pub fn run_tasks() {
         if let Some(pending) = processor.take_pending() {
             // 【关键】清除 running_on_cpu 标记，表示任务已经停止运行
             pending.running_on_cpu.store(TASK_NOT_RUNNING, Ordering::SeqCst);
+            // 【关键】清除 on_cpu 标记，表示任务已完成上下文切换
+            // 这允许其他 CPU 通过 work stealing 偷取该任务
+            pending.on_cpu.store(false, Ordering::Release);
+            
+            // 内存屏障确保上述标记对其他 CPU 可见
+            core::sync::atomic::fence(Ordering::SeqCst);
             
             // CFS: 更新被切换出去任务的vruntime
             {
@@ -121,6 +133,21 @@ pub fn run_tasks() {
         }
         
         if let Some(task) = fetch_task() {
+            // 【关键】参考 starry-mix: 等待任务完成上一次的调度过程
+            // 如果任务的 on_cpu 仍为 true，说明上一个 CPU 还没完成切换
+            // 这在 work stealing 场景下尤为重要
+            let mut spin_count = 0u32;
+            while task.on_cpu.load(Ordering::Acquire) {
+                core::hint::spin_loop();
+                spin_count += 1;
+                if spin_count > 1000000 {
+                    // 如果等待太久，可能有问题
+                    log::warn!("[CPU {}] Waiting too long for task pid={} to finish on_cpu", 
+                               cpu_id, task.pid.0);
+                    spin_count = 0;
+                }
+            }
+            
             // 【关键】原子检查：确保任务不会同时在多个CPU上运行
             let prev_cpu = task.running_on_cpu.compare_exchange(
                 TASK_NOT_RUNNING,
@@ -140,7 +167,19 @@ pub fn run_tasks() {
                 // 【关键】确保 kernel_tp 设置为当前 CPU ID
                 // 这对于 work stealing 场景尤为重要，因为偷取的任务可能来自其他 CPU
                 let trap_cx = task_inner.get_trap_cx();
+                let old_kernel_tp = trap_cx.kernel_tp;
                 trap_cx.kernel_tp = cpu_id;
+                
+                // 【调试】验证 kernel_tp 设置成功
+                let new_kernel_tp = trap_cx.kernel_tp;
+                if new_kernel_tp != cpu_id {
+                    panic!("[CPU {}] Failed to set kernel_tp: expected {} but got {}", 
+                           cpu_id, cpu_id, new_kernel_tp);
+                }
+                if old_kernel_tp != cpu_id && old_kernel_tp < MAX_CPU_NUM {
+                    log::trace!("[CPU {}] Updated kernel_tp from {} to {} for task pid={}", 
+                               cpu_id, old_kernel_tp, cpu_id, task.pid.0);
+                }
                 
                 task_inner.task_status = TaskStatus::Running;
                 // CFS: 记录任务开始执行的时间
@@ -168,7 +207,11 @@ pub fn run_tasks() {
             // 使用 print! 而不是 log::info! 以确保立即输出
             // print!("[CPU {}] SW->pid={} ra={:#x}\n", cpu_id, task_pid, next_ra);
             
-            // Memory barrier to ensure check happens before __switch
+            // 【关键】设置 on_cpu 标记，表示任务正在进行上下文切换
+            // 这防止其他 CPU 在切换完成前偷取该任务
+            task.on_cpu.store(true, Ordering::Release);
+            
+            // Memory barrier to ensure on_cpu is visible before __switch
             core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
             
             processor.current = Some(task);
@@ -180,22 +223,13 @@ pub fn run_tasks() {
             }
             // 回到这里时，任务已被挂起，pending_task已设置（如果是正常suspend）
             
-            // 【调试】验证 idle_task_cx 是否仍然有效
-            // #[cfg(target_arch = "riscv64")]
-            // {
-            //     let idle_ra = unsafe { (*idle_task_cx_ptr).ra };
-            //     if idle_ra == 0 {
-            //         panic!("[CPU {}] After __switch return: idle_task_cx.ra is 0!", current_cpu_id());
-            //     }
-            // }
-            
-            // Debug: Verify we came back correctly
+            // 【安全检查】验证 __switch 返回后 tp 寄存器仍有效
             #[cfg(target_arch = "riscv64")]
             {
-                let current_ra: usize;
-                unsafe { core::arch::asm!("mv {}, ra", out(reg) current_ra); }
-                if current_ra == 0 {
-                    panic!("[CPU {}] Returned from __switch with ra=0!", cpu_id);
+                let current_tp: usize;
+                unsafe { core::arch::asm!("mv {}, tp", out(reg) current_tp); }
+                if current_tp >= MAX_CPU_NUM {
+                    panic!("[run_tasks] After __switch: tp={} is invalid!", current_tp);
                 }
             }
             // 继续循环会处理pending_task
@@ -203,29 +237,12 @@ pub fn run_tasks() {
             // 没有任务，释放锁
             drop(processor);
 
-            // 关键调试日志：确认是否进入 Idle
-            log::info!("[run_tasks] No tasks. Enabling interrupts and entering wfi...");
-
-            // ==== DEBUG START: 检查中断寄存器 ====
-            #[cfg(target_arch = "riscv64")]
-            {
-                let sstatus_val = unsafe { riscv::register::sstatus::read() };
-                let sie_val = unsafe { riscv::register::sie::read() };
-                let sip_val = unsafe { riscv::register::sip::read() };
-                let time_val = unsafe { riscv::register::time::read() };
-                // sstatus.sie() 是全局中断使能位 (Bit 1)
-                // sie.stie() 是时钟中断使能位 (Bit 5)
-                // sip.stip() 是时钟中断等待位 (Bit 5)
-                log::info!("[Idle Debug] sstatus: {:?}, sie: {:?}, sip: {:?}, time: {}", 
-                    sstatus_val, sie_val, sip_val, time_val);
-            }
-            // ==== DEBUG END ====
-            // 3. 【关键】Idle 状态处理
-            // 必须开启中断才能被唤醒（响应时钟中断或其他），
-            // 使用 wfi 等待以降低功耗。
+            // 【Idle 状态处理】
+            // 必须开启中断才能被唤醒（响应时钟中断或其他）
             restore_interrupts(true);
-            // riscv::asm::wfi(); 
-            log::info!("[run_tasks] Woke up from wfi!");
+            
+            // 可选：使用 wfi 等待以降低功耗
+            // riscv::asm::wfi();
         }
     }
 }
@@ -240,6 +257,10 @@ pub fn take_current_task() -> Option<Arc<TaskControlBlock>> {
 
 pub fn current_task() -> Option<Arc<TaskControlBlock>> {
     let cpu_id = current_cpu_id();
+    // 【关键检查】验证 cpu_id 有效
+    if cpu_id >= MAX_CPU_NUM {
+        panic!("[current_task] Invalid cpu_id {} (tp register corrupted)!", cpu_id);
+    }
     // 1. 关中断以获取锁
     let was_enabled = disable_interrupts();
     let task = PROCESSORS[cpu_id].lock().current();

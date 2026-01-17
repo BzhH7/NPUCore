@@ -418,6 +418,7 @@ impl CfsRunQueue {
     /// 
     /// Safety: Only steals tasks with valid context (task_cx.ra != 0)
     /// Safety: Only steals tasks not currently running on any CPU
+    /// Safety: Only steals tasks that have finished their context switch (on_cpu == false)
     pub fn steal_for_cpu(&mut self, target_cpu: usize) -> Option<Arc<TaskControlBlock>> {
         // Find a task that can run on target_cpu
         // We iterate from the back (highest vruntime = least urgent) for fairness
@@ -425,7 +426,14 @@ impl CfsRunQueue {
             .iter()
             .rev()  // Start from highest vruntime (least urgent)
             .find_map(|(key, task)| {
-                // 【关键安全检查】检查任务是否正在其他 CPU 上运行
+                // 【关键安全检查1】检查任务是否正在进行上下文切换
+                // 参考 starry-mix: 等待 on_cpu 变为 false
+                if task.on_cpu.load(AtomicOrdering::Acquire) {
+                    // 任务正在进行上下文切换，跳过
+                    return None;
+                }
+                
+                // 【关键安全检查2】检查任务是否正在其他 CPU 上运行
                 // 这可以捕获潜在的并发错误
                 let running_cpu = task.running_on_cpu.load(AtomicOrdering::SeqCst);
                 if running_cpu != TASK_NOT_RUNNING {
@@ -437,7 +445,7 @@ impl CfsRunQueue {
                 
                 let inner = task.acquire_inner_lock();
                 
-                // 【关键安全检查】只偷取上下文有效的任务
+                // 【关键安全检查3】只偷取上下文有效的任务
                 // task_cx.ra == 0 表示任务上下文尚未初始化或已损坏
                 let ra = inner.task_cx.ra;
                 if ra == 0 || ra < 0x80000000 {

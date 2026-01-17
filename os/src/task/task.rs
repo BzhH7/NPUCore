@@ -31,7 +31,7 @@ use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::fmt::{self, Debug, Formatter};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize};
 use log::trace;
 use spin::{Mutex, MutexGuard};
 use crate::task::processor::current_cpu_id;
@@ -73,6 +73,12 @@ pub struct TaskControlBlock {
     /// 【调试】记录当前任务正在哪个 CPU 上运行，用于检测双重运行
     /// TASK_NOT_RUNNING 表示不在任何 CPU 上运行
     pub running_on_cpu: AtomicUsize,
+    
+    /// 【多核安全】标记任务是否正在进行上下文切换
+    /// 参考 starry-mix 的设计：防止在 switch_to 未完成时被其他 CPU 偷取
+    /// true = 任务正在某个 CPU 上执行上下文切换，不可被偷取
+    /// false = 任务已完成切换，可以被调度
+    pub on_cpu: AtomicBool,
 
     // Mutable fields (protected by mutex)
     /// Task inner state
@@ -446,6 +452,7 @@ impl TaskControlBlock {
             ustack_base: ustack_bottom_from_tid(tid),
             exit_signal: Signals::empty(),
             running_on_cpu: AtomicUsize::new(TASK_NOT_RUNNING),
+            on_cpu: AtomicBool::new(false),
             exe: Arc::new(Mutex::new(elf)),
             tid_allocator,
             files: Arc::new(Mutex::new(FdTable::new({
@@ -499,6 +506,9 @@ impl TaskControlBlock {
             kstack_top,
             trap_handler as usize,
         );
+        // 【关键修复】设置 kernel_tp 为当前 CPU ID
+        // 这是必须的，因为 app_init_context 将 kernel_tp 初始化为 0
+        trap_cx.kernel_tp = current_cpu_id();
         trace!("[new] trap_cx:{:?}", *trap_cx);
         task_control_block
     }
@@ -681,6 +691,7 @@ impl TaskControlBlock {
             },
             exit_signal,
             running_on_cpu: AtomicUsize::new(TASK_NOT_RUNNING),
+            on_cpu: AtomicBool::new(false),
 
             // 资源共享控制
             exe: self.exe.clone(),
@@ -776,6 +787,11 @@ impl TaskControlBlock {
         trap_cx.gp.a0 = 0;
         // 修改陷阱上下文中的内核栈指针
         trap_cx.kernel_sp = kstack_top;
+        // 【关键修复】设置 kernel_tp
+        // 使用父进程的 kernel_tp，因为子进程创建时是在父进程的 CPU 上
+        // 注意：不使用 current_cpu_id()，因为如果 tp 被破坏，current_cpu_id() 会返回错误值
+        // 这样可以避免恶性循环
+        trap_cx.kernel_tp = parent_inner.get_trap_cx().kernel_tp;
         // 返回
         task_control_block
         // ---- 释放父PCB锁

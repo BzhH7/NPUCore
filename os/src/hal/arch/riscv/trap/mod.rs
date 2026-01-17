@@ -3,16 +3,13 @@ use core::arch::{asm, global_asm};
 
 use super::TrapImpl;
 use crate::config::TRAMPOLINE;
-use crate::fs::directory_tree::ROOT;
-use crate::fs::OpenFlags;
 use crate::hal::arch::riscv::time::set_next_trigger;
 use crate::mm::{frame_reserve, MemoryError, VirtAddr};
 use crate::syscall::syscall;
 use crate::task::{
-    current_task, current_trap_cx, do_signal, do_wake_expired, run_tasks, suspend_current_and_run_next,
+    current_task, do_signal, do_wake_expired, run_tasks, suspend_current_and_run_next,
     Signals,
 };
-use alloc::format;
 pub use context::UserContext;
 use riscv::register::{
     mtvec::TrapMode,
@@ -75,6 +72,18 @@ pub fn enable_timer_interrupt() {
 #[no_mangle]
 pub fn trap_handler() -> ! {
     set_kernel_trap_entry();
+    
+    // 【关键检查】验证 tp 寄存器有效
+    // 如果 tp 无效，说明 kernel_tp 没有正确设置
+    let raw_tp: usize;
+    unsafe { core::arch::asm!("mv {}, tp", out(reg) raw_tp); }
+    if raw_tp >= crate::config::MAX_CPU_NUM {
+        let sepc_val = sepc::read();
+        let scause_val = scause::read();
+        let stval_val = stval::read();
+        panic!("[trap_handler] Invalid tp={} (should be < {}). sepc={:#x} scause={:?} stval={:#x}",
+               raw_tp, crate::config::MAX_CPU_NUM, sepc_val, scause_val.cause(), stval_val);
+    }
 
     // 安全地记录时间，仅当有任务时
     if let Some(task) = current_task() {
