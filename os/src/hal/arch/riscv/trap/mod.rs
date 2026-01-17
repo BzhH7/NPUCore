@@ -273,8 +273,10 @@ pub fn trap_from_kernel() {
     
     // Debug: Check if sepc is 0 or invalid when entering kernel trap
     if kernel_pc == 0 {
-        panic!("[KTRAP] sepc=0 on entry! TP={} SP={:#x} RA={:#x} cause={:?}", 
-               raw_tp, raw_sp, raw_ra, scause.cause());
+        // 更详细的调试信息
+        let sstatus_val = sstatus::read();
+        panic!("[KTRAP] sepc=0 on entry! TP={} SP={:#x} RA={:#x} cause={:?} stval={:#x} SPP={:?}", 
+               raw_tp, raw_sp, raw_ra, scause.cause(), stval, sstatus_val.spp());
     }
     
     match scause.cause() {

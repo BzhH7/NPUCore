@@ -46,8 +46,10 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
+use core::sync::atomic::Ordering as AtomicOrdering;
 
 use crate::task::TaskControlBlock;
+use crate::task::task::TASK_NOT_RUNNING;
 
 // ============================================================================
 // CFS Configuration Constants
@@ -408,6 +410,60 @@ impl CfsRunQueue {
         self.nr_running = self.nr_running.saturating_sub(1);
         
         Some(task)
+    }
+
+    /// Steal a task that can run on the target CPU (for work stealing)
+    /// Returns a task whose CPU affinity allows running on target_cpu
+    /// Prefers tasks with higher vruntime (less urgent) to minimize impact
+    /// 
+    /// Safety: Only steals tasks with valid context (task_cx.ra != 0)
+    /// Safety: Only steals tasks not currently running on any CPU
+    pub fn steal_for_cpu(&mut self, target_cpu: usize) -> Option<Arc<TaskControlBlock>> {
+        // Find a task that can run on target_cpu
+        // We iterate from the back (highest vruntime = least urgent) for fairness
+        let key_to_steal = self.tasks
+            .iter()
+            .rev()  // Start from highest vruntime (least urgent)
+            .find_map(|(key, task)| {
+                // 【关键安全检查】检查任务是否正在其他 CPU 上运行
+                // 这可以捕获潜在的并发错误
+                let running_cpu = task.running_on_cpu.load(AtomicOrdering::SeqCst);
+                if running_cpu != TASK_NOT_RUNNING {
+                    // 任务正在某个 CPU 上运行，不应该在队列中
+                    log::warn!("[steal_for_cpu] Task pid={} found in queue but running_on_cpu={}", 
+                               task.pid.0, running_cpu);
+                    return None;
+                }
+                
+                let inner = task.acquire_inner_lock();
+                
+                // 【关键安全检查】只偷取上下文有效的任务
+                // task_cx.ra == 0 表示任务上下文尚未初始化或已损坏
+                let ra = inner.task_cx.ra;
+                if ra == 0 || ra < 0x80000000 {
+                    // 无效的 ra，跳过这个任务
+                    return None;
+                }
+                
+                // 检查 CPU 亲和性
+                if inner.sched_entity.can_run_on(target_cpu) {
+                    Some(*key)
+                } else {
+                    None
+                }
+            });
+        
+        if let Some(key) = key_to_steal {
+            if let Some(task) = self.tasks.remove(&key) {
+                // Update accounting
+                let weight = task.acquire_inner_lock().sched_entity.weight as u64;
+                self.total_weight = self.total_weight.saturating_sub(weight);
+                self.nr_running = self.nr_running.saturating_sub(1);
+                return Some(task);
+            }
+        }
+        
+        None
     }
 
     /// Peek at the next task without removing it

@@ -177,6 +177,17 @@ impl TaskManager {
         }
     }
     
+    /// 尝试从CFS队列偷取一个可以在指定CPU上运行的任务
+    /// 会检查任务的CPU亲和性，确保只偷取可以在目标CPU上运行的任务
+    pub fn steal_from_cfs_for_cpu(&mut self, target_cpu: usize) -> Option<Arc<TaskControlBlock>> {
+        if self.cfs_rq.len() < 2 {
+            return None;
+        }
+        
+        // 使用带亲和性检查的偷取方法
+        self.cfs_rq.steal_for_cpu(target_cpu)
+    }
+    
     /// 获取总任务数
     pub fn total_count(&self) -> usize {
         self.rt_rq.len() + self.cfs_rq.len() + self.idle_rq.len()
@@ -416,9 +427,47 @@ pub fn fetch_task() -> Option<Arc<TaskControlBlock>> {
             // 只在对方有足够任务时才偷取（避免饥饿）
             if other_manager.total_count() >= 2 {
                 // 优先偷取CFS任务（RT任务优先级高，不适合偷取）
-                if let Some(task) = other_manager.steal_from_cfs() {
+                // 使用新的带CPU亲和性检查的偷取方法
+                if let Some(task) = other_manager.steal_from_cfs_for_cpu(cpu_id) {
                     #[cfg(feature = "oom_handler")]
                     other_manager.active_tracker.mark_active(task.pid.0);
+                    
+                    // 【关键安全检查】在偷取后、切换前，再次验证任务上下文
+                    {
+                        let task_inner = task.acquire_inner_lock();
+                        let task_cx_ra = task_inner.task_cx.ra;
+                        let task_cx_sp = task_inner.task_cx.sp;
+                        
+                        // 检查 task_cx 是否有效
+                        if task_cx_ra == 0 || task_cx_ra < 0x80000000 {
+                            // 上下文无效，放回队列并跳过
+                            log::warn!("[WorkSteal] Skip task pid={} with invalid task_cx.ra={:#x}", 
+                                      task.pid.0, task_cx_ra);
+                            drop(task_inner);
+                            other_manager.add(task);
+                            continue;
+                        }
+                        
+                        if task_cx_sp == 0 || task_cx_sp < 0x80000000 {
+                            log::warn!("[WorkSteal] Skip task pid={} with invalid task_cx.sp={:#x}", 
+                                      task.pid.0, task_cx_sp);
+                            drop(task_inner);
+                            other_manager.add(task);
+                            continue;
+                        }
+                    }
+                    
+                    // 【关键修复】偷取任务后，必须更新 kernel_tp 为当前CPU ID
+                    // 否则任务返回用户态再陷入内核时，会使用错误的CPU ID
+                    {
+                        let mut task_inner = task.acquire_inner_lock();
+                        task_inner.get_trap_cx().kernel_tp = cpu_id;
+                        // 更新调度实体中的last_cpu
+                        task_inner.sched_entity.set_last_cpu(cpu_id);
+                    }
+                    
+                    // 内存屏障：确保kernel_tp的更新对其他CPU可见
+                    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
                     
                     return Some(task);
                 }

@@ -31,10 +31,14 @@ use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::fmt::{self, Debug, Formatter};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use log::trace;
 use spin::{Mutex, MutexGuard};
 use crate::task::processor::current_cpu_id;
 use crate::task::cfs_scheduler::SchedEntity;
+
+/// 无效的 CPU ID，表示任务未在任何 CPU 上运行
+pub const TASK_NOT_RUNNING: usize = usize::MAX;
 
 /// Task filesystem state
 #[derive(Clone)]
@@ -65,6 +69,10 @@ pub struct TaskControlBlock {
     pub ustack_base: usize,
     /// Exit signal
     pub exit_signal: Signals,
+    
+    /// 【调试】记录当前任务正在哪个 CPU 上运行，用于检测双重运行
+    /// TASK_NOT_RUNNING 表示不在任何 CPU 上运行
+    pub running_on_cpu: AtomicUsize,
 
     // Mutable fields (protected by mutex)
     /// Task inner state
@@ -437,6 +445,7 @@ impl TaskControlBlock {
             kstack,
             ustack_base: ustack_bottom_from_tid(tid),
             exit_signal: Signals::empty(),
+            running_on_cpu: AtomicUsize::new(TASK_NOT_RUNNING),
             exe: Arc::new(Mutex::new(elf)),
             tid_allocator,
             files: Arc::new(Mutex::new(FdTable::new({
@@ -671,6 +680,7 @@ impl TaskControlBlock {
                 ustack_bottom_from_tid(tid)
             },
             exit_signal,
+            running_on_cpu: AtomicUsize::new(TASK_NOT_RUNNING),
 
             // 资源共享控制
             exe: self.exe.clone(),

@@ -1,12 +1,14 @@
 use super::{__switch, do_wake_expired};
 use super::{fetch_task, add_task, sleep_interruptible, TaskStatus};
 use super::{TaskContext, TaskControlBlock};
+use super::task::TASK_NOT_RUNNING;
 use crate::hal::{TrapContext, disable_interrupts, restore_interrupts};
 use crate::timer::get_time_ns;
 use alloc::sync::Arc;
 use lazy_static::*;
 use spin::Mutex;
 use core::arch::asm;
+use core::sync::atomic::Ordering;
 use crate::config::MAX_CPU_NUM; // 引入CPU数量配置
 use alloc::vec::Vec;
 
@@ -87,6 +89,9 @@ pub fn run_tasks() {
         // 【关键修复】先检查是否有pending任务需要处理
         // 这个任务的上下文已经在上次__switch时保存了
         if let Some(pending) = processor.take_pending() {
+            // 【关键】清除 running_on_cpu 标记，表示任务已经停止运行
+            pending.running_on_cpu.store(TASK_NOT_RUNNING, Ordering::SeqCst);
+            
             // CFS: 更新被切换出去任务的vruntime
             {
                 let now = get_time_ns() as u64;
@@ -116,10 +121,27 @@ pub fn run_tasks() {
         }
         
         if let Some(task) = fetch_task() {
+            // 【关键】原子检查：确保任务不会同时在多个CPU上运行
+            let prev_cpu = task.running_on_cpu.compare_exchange(
+                TASK_NOT_RUNNING,
+                cpu_id,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+            if let Err(other_cpu) = prev_cpu {
+                panic!("[CPU {}] DOUBLE RUN DETECTED! Task pid={} is already running on CPU {}!", 
+                       cpu_id, task.pid.0, other_cpu);
+            }
+            
             let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
             let next_task_cx_ptr = {
                 let mut task_inner = task.acquire_inner_lock();
-                task_inner.get_trap_cx().kernel_tp = cpu_id;
+                
+                // 【关键】确保 kernel_tp 设置为当前 CPU ID
+                // 这对于 work stealing 场景尤为重要，因为偷取的任务可能来自其他 CPU
+                let trap_cx = task_inner.get_trap_cx();
+                trap_cx.kernel_tp = cpu_id;
+                
                 task_inner.task_status = TaskStatus::Running;
                 // CFS: 记录任务开始执行的时间
                 task_inner.sched_entity.exec_start = get_time_ns() as u64;
@@ -131,14 +153,20 @@ pub fn run_tasks() {
             // Debug: Check next_task_cx before switch
             let next_ra = unsafe { (*next_task_cx_ptr).ra };
             let next_sp = unsafe { (*next_task_cx_ptr).sp };
+            let task_pid = task.pid.0;
+            
             if next_ra == 0 {
                 panic!("[CPU {}] About to switch to task pid={} with ra=0x0!", 
-                       cpu_id, task.pid.0);
+                       cpu_id, task_pid);
             }
             if next_ra < 0x80000000 || next_ra > 0xffffffff00000000 {
                 panic!("[CPU {}] About to switch to task pid={} with invalid ra=0x{:x}!", 
-                       cpu_id, task.pid.0, next_ra);
+                       cpu_id, task_pid, next_ra);
             }
+            
+            // 【调试日志】记录即将切换的任务
+            // 使用 print! 而不是 log::info! 以确保立即输出
+            // print!("[CPU {}] SW->pid={} ra={:#x}\n", cpu_id, task_pid, next_ra);
             
             // Memory barrier to ensure check happens before __switch
             core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
@@ -151,6 +179,16 @@ pub fn run_tasks() {
                 __switch(idle_task_cx_ptr, next_task_cx_ptr);
             }
             // 回到这里时，任务已被挂起，pending_task已设置（如果是正常suspend）
+            
+            // 【调试】验证 idle_task_cx 是否仍然有效
+            // #[cfg(target_arch = "riscv64")]
+            // {
+            //     let idle_ra = unsafe { (*idle_task_cx_ptr).ra };
+            //     if idle_ra == 0 {
+            //         panic!("[CPU {}] After __switch return: idle_task_cx.ra is 0!", current_cpu_id());
+            //     }
+            // }
+            
             // Debug: Verify we came back correctly
             #[cfg(target_arch = "riscv64")]
             {
