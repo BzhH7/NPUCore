@@ -1,14 +1,9 @@
-### 一、简介
-
-`NPUcore-Ovo` 基于 `NPUcore-BLOSSOM` 框架，参考借鉴去年内核赛道优秀参赛队伍与 `Linux` 内核的诸多优秀设计，完善其内部功能实现并进行迭代升级而形成的竞赛操作系统。
-<div align="center">
-
 # OSKernel2025-NPUcore-Ovo
 
 ### RISC-V + LoongArch 双架构操作系统内核
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/Rust-nightly--2024--05--01-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/Rust-nightly--2024--02--03-orange.svg)](https://www.rust-lang.org/)
 [![RISC-V](https://img.shields.io/badge/RISC--V-rv64gc-green.svg)](https://riscv.org/)
 [![LoongArch](https://img.shields.io/badge/LoongArch-la64-red.svg)](https://loongson.cn/)
 
@@ -34,18 +29,21 @@
 
 > **目标**: 参与全国大学生计算机系统能力大赛 - 操作系统设计赛
 
+
+
 ---
 
 ## 特性
 
 | 特性 | 描述 |
 |:---:|:---|
-| **双架构支持** | 同时支持 RISC-V 64 和 LoongArch 64 架构 |
-| **多平台适配** | QEMU 模拟器 / VisionFive2 / 龙芯 2K1000 |
-| **文件系统** | FAT32 / EXT4 双文件系统支持 |
-| **网络协议栈** | 基于 smoltcp 的 TCP/UDP 支持 |
-| **内存管理** | 写时复制 (CoW) / ZRAM 压缩 / Swap 交换 |
-| **进程管理** | 多进程/多线程 / 信号处理 / Futex /多 核|
+| **双架构支持** | 同时支持 RISC-V 64 (QEMU/VisionFive2) 和 LoongArch 64 (QEMU/2K1000) 架构 |
+| **进程管理** | 多进程/多线程、CFS 公平调度、实时调度、信号处理、Futex、多核支持 |
+| **内存管理** | 分页虚拟内存、写时复制 (CoW)、ZRAM 压缩内存、Swap 交换、Next-Fit 分配 |
+| **文件系统** | FAT32 / EXT4 双文件系统支持、虚拟文件系统 (VFS) |
+| **设备驱动** | VirtIO 块设备、SATA、串口驱动等 |
+| **网络协议栈** | 基于 smoltcp 的 TCP/UDP Socket 支持 |
+| **系统调用** | 兼容 Linux 系统调用接口 |
 
 ---
 
@@ -166,14 +164,30 @@ docker run -it --privileged \
 ### 构建运行
 
 ```bash
-# 构建
+# 配置环境
+make env
+
+# 构建 (默认 RISC-V)
 make all
 
 # 运行
 make run
 ```
 
-> 📚 详细文档请参阅 [docs/](./docs/) 目录
+> 📚 更多构建选项与详细说明请参阅 [构建与部署文档](./docs/构建与部署.md)
+
+---
+
+## 文档索引
+
+更详细的项目文档位于 `docs/` 目录下：
+
+- [项目概述](./docs/项目概述.md): 项目背景、目标与详细特性介绍
+- [构建与部署](./docs/构建与部署.md): 详细的开发环境配置与构建运行指南
+- [模块设计](./docs/模块设计.md): 内存管理、进程管理等核心模块的设计细节
+- [系统架构设计](./docs/系统架构设计.md): 整体系统架构与多核调度设计
+- [系统调用 API 参考](./docs/系统调用%20API%20参考.md): 支持的系统调用列表与说明
+- [更新日志-多核与调度](./docs/更新日志-多核与调度.md): 近期关于多核支持与调度器的更新记录
 
 ---
 
