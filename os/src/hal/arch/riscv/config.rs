@@ -54,7 +54,7 @@ pub const MEM_DISK_SIZE: usize = 0x1000_0000;
 pub use crate::hal::arch::riscv::rv_board::{CLOCK_FREQ, MMIO};
 
 /// Maximum number of CPUs supported (matches boot stack allocation in entry.asm)
-pub const MAX_CPU_NUM: usize = 4;
+pub const MAX_CPU_NUM: usize = 1;
 
 #[macro_export]
 macro_rules! signal_type {
