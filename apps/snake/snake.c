@@ -1,28 +1,18 @@
 /**
- * Snake Game - 贪吃蛇游戏
- * 用于演示操作系统内核的终端I/O和进程管理能力
- * 
- * 功能演示:
- * - termios原始模式 (tcgetattr/tcsetattr)
- * - 非阻塞I/O (fcntl)
- * - ANSI转义序列渲染
- * - 定时器 (usleep)
- * - 随机数生成
+ * Snake Game - 贪吃蛇游戏 (优化版)
+ * 使用单缓冲渲染避免闪烁
  */
 
-#define _DEFAULT_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <termios.h>
 #include <fcntl.h>
-#include <time.h>
-#include <sys/time.h>
 
 /* 游戏区域大小 */
-#define WIDTH  40
-#define HEIGHT 20
+#define WIDTH  30
+#define HEIGHT 15
 #define MAX_SNAKE_LEN (WIDTH * HEIGHT)
 
 /* 方向定义 */
@@ -41,85 +31,49 @@ typedef struct {
     Point food;
     int score;
     int game_over;
-    int speed;  /* 毫秒 */
 } GameState;
 
 static struct termios orig_termios;
-static int raw_mode_enabled = 0;
+static int orig_flags;
 
-/* 恢复终端设置 */
-void disable_raw_mode(void) {
-    if (raw_mode_enabled) {
-        tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
-        /* 显示光标 */
-        printf("\033[?25h");
-        fflush(stdout);
-        raw_mode_enabled = 0;
-    }
+/* 简单随机数 */
+static unsigned int seed = 12345;
+static int myrand(int max) {
+    seed = seed * 1103515245 + 12345;
+    return ((seed >> 16) & 0x7FFF) % max;
 }
 
-/* 启用原始模式 */
-void enable_raw_mode(void) {
-    struct termios raw;
-    
-    tcgetattr(STDIN_FILENO, &orig_termios);
-    atexit(disable_raw_mode);
-    
-    raw = orig_termios;
-    raw.c_lflag &= ~(ECHO | ICANON | ISIG);
-    raw.c_cc[VMIN] = 0;
-    raw.c_cc[VTIME] = 0;
-    tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
-    
-    /* 设置非阻塞读取 */
-    int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
-    fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
-    
-    /* 隐藏光标 */
-    printf("\033[?25l");
-    fflush(stdout);
-    
-    raw_mode_enabled = 1;
+/* 整数转字符串 */
+static int itoa_simple(int num, char *buf) {
+    char tmp[16];
+    int i = 0, j = 0;
+    if (num == 0) { buf[0] = '0'; return 1; }
+    while (num > 0) { tmp[i++] = '0' + (num % 10); num /= 10; }
+    while (i > 0) buf[j++] = tmp[--i];
+    return j;
+}
+
+/* 恢复终端 */
+static void restore_term(void) {
+    tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
+    fcntl(STDIN_FILENO, F_SETFL, orig_flags);
+    write(STDOUT_FILENO, "\033[?25h\033[0m", 10);  /* 显示光标,重置颜色 */
 }
 
 /* 清屏 */
-void clear_screen(void) {
-    printf("\033[2J\033[H");
-    fflush(stdout);
+static void cls(void) {
+    write(STDOUT_FILENO, "\033[2J\033[H", 7);
 }
 
-/* 移动光标 */
-void move_cursor(int x, int y) {
-    printf("\033[%d;%dH", y + 1, x + 1);
-}
-
-/* 设置颜色 */
-void set_color(int fg) {
-    printf("\033[%dm", fg);
-}
-
-/* 重置颜色 */
-void reset_color(void) {
-    printf("\033[0m");
-}
-
-/* 获取随机数 */
-int get_random(int max) {
-    return rand() % max;
-}
-
-/* 生成食物位置 */
-void spawn_food(GameState *game) {
+/* 生成食物 */
+static void spawn_food(GameState *g) {
     int valid;
     do {
         valid = 1;
-        game->food.x = get_random(WIDTH - 2) + 1;
-        game->food.y = get_random(HEIGHT - 2) + 1;
-        
-        /* 检查是否与蛇身重叠 */
-        for (int i = 0; i < game->snake_len; i++) {
-            if (game->snake[i].x == game->food.x && 
-                game->snake[i].y == game->food.y) {
+        g->food.x = myrand(WIDTH - 2) + 1;
+        g->food.y = myrand(HEIGHT - 2) + 1;
+        for (int i = 0; i < g->snake_len; i++) {
+            if (g->snake[i].x == g->food.x && g->snake[i].y == g->food.y) {
                 valid = 0;
                 break;
             }
@@ -128,266 +82,237 @@ void spawn_food(GameState *game) {
 }
 
 /* 初始化游戏 */
-void init_game(GameState *game) {
-    memset(game, 0, sizeof(GameState));
-    
-    /* 蛇初始位置在中间 */
-    game->snake_len = 3;
-    game->snake[0].x = WIDTH / 2;
-    game->snake[0].y = HEIGHT / 2;
-    game->snake[1].x = WIDTH / 2 - 1;
-    game->snake[1].y = HEIGHT / 2;
-    game->snake[2].x = WIDTH / 2 - 2;
-    game->snake[2].y = HEIGHT / 2;
-    
-    game->dir = RIGHT;
-    game->score = 0;
-    game->game_over = 0;
-    game->speed = 150;  /* 150ms */
-    
-    spawn_food(game);
+static void init_game(GameState *g) {
+    memset(g, 0, sizeof(GameState));
+    g->snake_len = 3;
+    g->snake[0].x = WIDTH / 2;
+    g->snake[0].y = HEIGHT / 2;
+    g->snake[1].x = WIDTH / 2 - 1;
+    g->snake[1].y = HEIGHT / 2;
+    g->snake[2].x = WIDTH / 2 - 2;
+    g->snake[2].y = HEIGHT / 2;
+    g->dir = RIGHT;
+    g->score = 0;
+    g->game_over = 0;
+    spawn_food(g);
 }
 
-/* Draw game screen */
-void render(GameState *game) {
-    clear_screen();
+/* 渲染游戏 - 使用单次write避免闪烁 */
+static void render(GameState *g) {
+    char buf[4096];
+    int pos = 0;
+    char screen[HEIGHT][WIDTH];
     
-    /* Draw border */
-    set_color(36);  /* Cyan */
-    for (int x = 0; x < WIDTH; x++) {
-        move_cursor(x, 0);
-        printf("#");
-        move_cursor(x, HEIGHT - 1);
-        printf("#");
-    }
+    /* 初始化屏幕缓冲 */
     for (int y = 0; y < HEIGHT; y++) {
-        move_cursor(0, y);
-        printf("#");
-        move_cursor(WIDTH - 1, y);
-        printf("#");
-    }
-    
-    /* 绘制蛇 */
-    for (int i = 0; i < game->snake_len; i++) {
-        move_cursor(game->snake[i].x, game->snake[i].y);
-        if (i == 0) {
-            set_color(32);  /* 绿色蛇头 */
-            printf("@");
-        } else {
-            set_color(92);  /* 亮绿色蛇身 */
-            printf("o");
+        for (int x = 0; x < WIDTH; x++) {
+            if (y == 0 || y == HEIGHT - 1 || x == 0 || x == WIDTH - 1)
+                screen[y][x] = '#';
+            else
+                screen[y][x] = ' ';
         }
     }
     
-    /* 绘制食物 */
-    set_color(31);  /* 红色 */
-    move_cursor(game->food.x, game->food.y);
-    printf("*");
+    /* 画蛇 */
+    for (int i = 0; i < g->snake_len; i++) {
+        int x = g->snake[i].x, y = g->snake[i].y;
+        if (x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT)
+            screen[y][x] = (i == 0) ? '@' : 'o';
+    }
     
-    /* 绘制分数 */
-    reset_color();
-    move_cursor(0, HEIGHT + 1);
-    printf("Score: %d  |  Speed: %dms  |  Length: %d", 
-           game->score, game->speed, game->snake_len);
-    move_cursor(0, HEIGHT + 2);
-    printf("Controls: WASD or Arrow Keys | Q: Quit");
+    /* 画食物 */
+    if (g->food.x >= 0 && g->food.x < WIDTH && g->food.y >= 0 && g->food.y < HEIGHT)
+        screen[g->food.y][g->food.x] = '*';
     
-    fflush(stdout);
-}
-
-/* 处理输入 */
-void handle_input(GameState *game) {
-    char c;
-    while (read(STDIN_FILENO, &c, 1) == 1) {
-        /* 处理方向键的转义序列 */
-        if (c == '\033') {
-            char seq[2];
-            if (read(STDIN_FILENO, &seq[0], 1) != 1) continue;
-            if (read(STDIN_FILENO, &seq[1], 1) != 1) continue;
-            if (seq[0] == '[') {
-                switch (seq[1]) {
-                    case 'A': c = 'w'; break;  /* 上 */
-                    case 'B': c = 's'; break;  /* 下 */
-                    case 'C': c = 'd'; break;  /* 右 */
-                    case 'D': c = 'a'; break;  /* 左 */
-                }
+    /* 构建输出缓冲 - 移动到左上角 */
+    buf[pos++] = '\033'; buf[pos++] = '['; buf[pos++] = 'H';
+    
+    /* 输出屏幕内容 */
+    for (int y = 0; y < HEIGHT; y++) {
+        for (int x = 0; x < WIDTH; x++) {
+            char c = screen[y][x];
+            if (c == '@') {
+                /* 绿色蛇头 */
+                memcpy(buf + pos, "\033[32m@\033[0m", 10);
+                pos += 10;
+            } else if (c == 'o') {
+                /* 亮绿色蛇身 */
+                memcpy(buf + pos, "\033[92mo\033[0m", 10);
+                pos += 10;
+            } else if (c == '*') {
+                /* 红色食物 */
+                memcpy(buf + pos, "\033[31m*\033[0m", 10);
+                pos += 10;
+            } else if (c == '#') {
+                /* 青色边框 */
+                memcpy(buf + pos, "\033[36m#\033[0m", 10);
+                pos += 10;
+            } else {
+                buf[pos++] = c;
             }
         }
-        
-        switch (c) {
-            case 'w': case 'W':
-                if (game->dir != DOWN) game->dir = UP;
-                break;
-            case 's': case 'S':
-                if (game->dir != UP) game->dir = DOWN;
-                break;
-            case 'a': case 'A':
-                if (game->dir != RIGHT) game->dir = LEFT;
-                break;
-            case 'd': case 'D':
-                if (game->dir != LEFT) game->dir = RIGHT;
-                break;
-            case 'q': case 'Q':
-                game->game_over = 1;
-                break;
-        }
+        buf[pos++] = '\n';
     }
+    
+    /* 分数信息 */
+    memcpy(buf + pos, "Score: ", 7); pos += 7;
+    pos += itoa_simple(g->score, buf + pos);
+    memcpy(buf + pos, "  Length: ", 10); pos += 10;
+    pos += itoa_simple(g->snake_len, buf + pos);
+    buf[pos++] = '\n';
+    memcpy(buf + pos, "WASD: Move  Q: Quit", 19); pos += 19;
+    buf[pos++] = '\n';
+    
+    write(STDOUT_FILENO, buf, pos);
 }
 
-/* 更新游戏状态 */
-void update(GameState *game) {
-    /* 计算新头部位置 */
-    Point new_head = game->snake[0];
+/* 更新游戏 */
+static void update(GameState *g) {
+    Point new_head = g->snake[0];
     
-    switch (game->dir) {
+    switch (g->dir) {
         case UP:    new_head.y--; break;
         case DOWN:  new_head.y++; break;
         case LEFT:  new_head.x--; break;
         case RIGHT: new_head.x++; break;
     }
     
-    /* 碰撞检测：边界 */
+    /* 碰撞边界 */
     if (new_head.x <= 0 || new_head.x >= WIDTH - 1 ||
         new_head.y <= 0 || new_head.y >= HEIGHT - 1) {
-        game->game_over = 1;
+        g->game_over = 1;
         return;
     }
     
-    /* 碰撞检测：自身 */
-    for (int i = 0; i < game->snake_len; i++) {
-        if (game->snake[i].x == new_head.x && 
-            game->snake[i].y == new_head.y) {
-            game->game_over = 1;
+    /* 碰撞自身 */
+    for (int i = 0; i < g->snake_len; i++) {
+        if (g->snake[i].x == new_head.x && g->snake[i].y == new_head.y) {
+            g->game_over = 1;
             return;
         }
     }
     
-    /* 检测是否吃到食物 */
-    int ate_food = (new_head.x == game->food.x && new_head.y == game->food.y);
+    /* 吃食物 */
+    int ate = (new_head.x == g->food.x && new_head.y == g->food.y);
     
-    /* 移动蛇 */
-    if (!ate_food) {
-        /* 没吃到食物，移除尾巴 */
-        for (int i = game->snake_len - 1; i > 0; i--) {
-            game->snake[i] = game->snake[i - 1];
-        }
+    if (!ate) {
+        /* 移动蛇身 */
+        for (int i = g->snake_len - 1; i > 0; i--)
+            g->snake[i] = g->snake[i - 1];
     } else {
-        /* 吃到食物，增长蛇身 */
-        for (int i = game->snake_len; i > 0; i--) {
-            game->snake[i] = game->snake[i - 1];
-        }
-        game->snake_len++;
-        game->score += 10;
-        
-        /* 加速 */
-        if (game->speed > 50) {
-            game->speed -= 5;
-        }
-        
-        spawn_food(game);
+        /* 增长 */
+        for (int i = g->snake_len; i > 0; i--)
+            g->snake[i] = g->snake[i - 1];
+        g->snake_len++;
+        g->score += 10;
+        spawn_food(g);
     }
     
-    game->snake[0] = new_head;
+    g->snake[0] = new_head;
 }
 
-/* Game over screen */
-void show_game_over(GameState *game) {
-    clear_screen();
-    printf("\n\n");
-    printf("   +------------------------------+\n");
-    printf("   |        GAME OVER!            |\n");
-    printf("   +------------------------------+\n");
-    printf("   |  Final Score: %-14d |\n", game->score);
-    printf("   |  Snake Length: %-13d |\n", game->snake_len);
-    printf("   +------------------------------+\n");
-    printf("   |  Press R to restart          |\n");
-    printf("   |  Press Q to quit             |\n");
-    printf("   +------------------------------+\n");
-    fflush(stdout);
-}
-
-/* 获取当前时间(毫秒) */
-long get_time_ms(void) {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return tv.tv_sec * 1000 + tv.tv_usec / 1000;
+/* 简单延时 */
+static void delay(int loops) {
+    volatile int i;
+    for (i = 0; i < loops; i++);
 }
 
 int main(void) {
     GameState game;
-    long last_update;
+    char c;
+    struct termios raw;
+    int frame_delay = 300000;  /* 调整此值控制速度 */
     
-    /* 初始化随机数种子 */
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    srand(tv.tv_sec ^ tv.tv_usec);
+    /* 设置终端 */
+    tcgetattr(STDIN_FILENO, &orig_termios);
+    orig_flags = fcntl(STDIN_FILENO, F_GETFL, 0);
     
-    enable_raw_mode();
+    raw = orig_termios;
+    raw.c_lflag &= ~(ECHO | ICANON);
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw);
     
-    /* Show welcome screen */
-    clear_screen();
-    printf("\n\n");
-    printf("   +--------------------------------------+\n");
-    printf("   |           SNAKE GAME                 |\n");
-    printf("   +--------------------------------------+\n");
-    printf("   |                                      |\n");
-    printf("   |   Controls:                          |\n");
-    printf("   |     W : Move Up                      |\n");
-    printf("   |     S : Move Down                    |\n");
-    printf("   |     A : Move Left                    |\n");
-    printf("   |     D : Move Right                   |\n");
-    printf("   |     Q : Quit                         |\n");
-    printf("   |                                      |\n");
-    printf("   |   Eat * to grow longer!              |\n");
-    printf("   |   Don't hit the walls or yourself!  |\n");
-    printf("   |                                      |\n");
-    printf("   |   Press any key to start...         |\n");
-    printf("   +--------------------------------------+\n");
-    fflush(stdout);
+    /* 隐藏光标 */
+    write(STDOUT_FILENO, "\033[?25l", 6);
     
-    /* 等待按键 */
-    while (1) {
-        char c;
-        if (read(STDIN_FILENO, &c, 1) == 1) break;
-        usleep(10000);
+    cls();
+    write(STDOUT_FILENO, "\n  === SNAKE GAME ===\n\n", 23);
+    write(STDOUT_FILENO, "  W/A/S/D - Move\n", 17);
+    write(STDOUT_FILENO, "  Q - Quit\n\n", 12);
+    write(STDOUT_FILENO, "  Press any key to start...\n", 28);
+    
+    read(STDIN_FILENO, &c, 1);
+    if (c == 'q' || c == 'Q') {
+        restore_term();
+        return 0;
     }
 
 restart:
     init_game(&game);
-    last_update = get_time_ms();
     
-    /* 主游戏循环 */
+    /* 设置非阻塞读取 */
+    fcntl(STDIN_FILENO, F_SETFL, orig_flags | O_NONBLOCK);
+    
+    cls();
+    
     while (!game.game_over) {
-        handle_input(&game);
+        render(&game);
         
-        long now = get_time_ms();
-        if (now - last_update >= game.speed) {
-            update(&game);
-            render(&game);
-            last_update = now;
+        /* 读取输入 */
+        while (read(STDIN_FILENO, &c, 1) == 1) {
+            if (c == '\033') {
+                char seq[2];
+                if (read(STDIN_FILENO, &seq[0], 1) == 1 &&
+                    read(STDIN_FILENO, &seq[1], 1) == 1 && seq[0] == '[') {
+                    switch (seq[1]) {
+                        case 'A': c = 'w'; break;
+                        case 'B': c = 's'; break;
+                        case 'C': c = 'd'; break;
+                        case 'D': c = 'a'; break;
+                    }
+                }
+            }
+            switch (c) {
+                case 'w': case 'W': if (game.dir != DOWN) game.dir = UP; break;
+                case 's': case 'S': if (game.dir != UP) game.dir = DOWN; break;
+                case 'a': case 'A': if (game.dir != RIGHT) game.dir = LEFT; break;
+                case 'd': case 'D': if (game.dir != LEFT) game.dir = RIGHT; break;
+                case 'q': case 'Q': game.game_over = 1; break;
+            }
         }
         
-        usleep(10000);  /* 10ms 轮询间隔 */
+        update(&game);
+        delay(frame_delay);
     }
     
-    /* 游戏结束 */
-    show_game_over(&game);
+    /* 恢复阻塞模式 */
+    fcntl(STDIN_FILENO, F_SETFL, orig_flags);
+    
+    cls();
+    write(STDOUT_FILENO, "\n  === GAME OVER ===\n\n", 22);
+    {
+        char msg[64];
+        int len = 0;
+        memcpy(msg, "  Score: ", 9); len = 9;
+        len += itoa_simple(game.score, msg + len);
+        msg[len++] = '\n';
+        memcpy(msg + len, "  Length: ", 10); len += 10;
+        len += itoa_simple(game.snake_len, msg + len);
+        msg[len++] = '\n'; msg[len++] = '\n';
+        write(STDOUT_FILENO, msg, len);
+    }
+    write(STDOUT_FILENO, "  R - Restart\n", 14);
+    write(STDOUT_FILENO, "  Q - Quit\n", 11);
     
     while (1) {
-        char c;
         if (read(STDIN_FILENO, &c, 1) == 1) {
-            if (c == 'r' || c == 'R') {
-                goto restart;
-            }
-            if (c == 'q' || c == 'Q') {
-                break;
-            }
+            if (c == 'r' || c == 'R') goto restart;
+            if (c == 'q' || c == 'Q') break;
         }
-        usleep(10000);
     }
     
-    clear_screen();
-    printf("Thanks for playing Snake!\n");
-    
+    restore_term();
+    cls();
     return 0;
 }

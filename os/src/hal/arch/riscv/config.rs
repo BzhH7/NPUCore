@@ -10,7 +10,8 @@ pub const USER_HEAP_SIZE: usize = PAGE_SIZE * 0x20;
 pub const KERNEL_STACK_SIZE: usize = PAGE_SIZE * 0x10;
 #[cfg(not(feature = "board_fu740"))]
 // pub const KERNEL_HEAP_SIZE: usize = PAGE_SIZE * 0x240;
-pub const KERNEL_HEAP_SIZE: usize = PAGE_SIZE * 0x800;
+// Increased from 0x800 (8MB) to 0x4000 (64MB) to support larger allocations
+pub const KERNEL_HEAP_SIZE: usize = PAGE_SIZE * 0x4000;
 #[cfg(feature = "board_fu740")]
 pub const KERNEL_HEAP_SIZE: usize = PAGE_SIZE * 0x2000;
 #[cfg(feature = "board_cv1811h")]

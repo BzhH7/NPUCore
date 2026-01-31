@@ -129,7 +129,15 @@ int main(int argc, char *argv[]) {
         
         /* 显示系统信息 */
         printf("top - %s up %s, %d users\n", time_str, uptime_str, 1);
-        printf("Load average: %.2f, %.2f, %.2f\n\n", load1, load5, load15);
+        printf("Load average: %.2f, %.2f, %.2f\n", load1, load5, load15);
+        
+        /* 获取 CPU 核心数 */
+        long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
+        if (nprocs > 0) {
+            printf("CPU cores: %ld\n\n", nprocs);
+        } else {
+            printf("\n");
+        }
         
         printf("Tasks: %hu total\n\n", info.procs);
         

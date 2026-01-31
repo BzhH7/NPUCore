@@ -43,6 +43,10 @@ impl FileDescriptor {
         self.nonblock
     }
 
+    pub fn set_nonblock(&mut self, flag: bool) {
+        self.nonblock = flag;
+    }
+
     pub fn get_cwd(&self) -> Option<String> {
         let inode = self.file.get_dirtree_node();
         let inode = match inode {

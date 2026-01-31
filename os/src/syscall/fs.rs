@@ -252,6 +252,10 @@ pub fn sys_read(fd: usize, buf: usize, count: usize) -> isize {
     if !file_descriptor.readable() {
         return EBADF;
     }
+    // Check non-blocking mode: if no data available, return EAGAIN
+    if file_descriptor.get_nonblock() && !file_descriptor.r_ready() {
+        return EAGAIN;
+    }
     let token = task.get_user_token();
     file_descriptor.read_user(
         None,
@@ -1604,6 +1608,17 @@ pub fn sys_fcntl(fd: usize, cmd: u32, arg: usize) -> isize {
                 res |= OpenFlags::O_NONBLOCK.bits() as isize;
             }
             res
+        }
+        Fcntl_Command::SETFL => {
+            let file_descriptor = match fd_table.get_refmut(fd) {
+                Ok(file_descriptor) => file_descriptor,
+                Err(errno) => return errno,
+            };
+            // Set non-blocking flag based on O_NONBLOCK in arg
+            let nonblock = (arg & OpenFlags::O_NONBLOCK.bits() as usize) != 0;
+            file_descriptor.set_nonblock(nonblock);
+            info!("[sys_fcntl] F_SETFL: set nonblock={}", nonblock);
+            SUCCESS
         }
         command => {
             warn!("[fcntl] Unsupported command: {:?}", command);

@@ -1,12 +1,12 @@
 # 源文件
-SRC := src/main.cpp src/tetromino.cpp src/game.cpp
+SRC := tetris.c
 
 # 编译选项
-CXXFLAGS := -Wall -W -pedantic -std=c++11 -static -fno-stack-protector
+CFLAGS := -Wall -W -pedantic -std=c99 -static -fno-stack-protector -O2
 
 # 交叉编译器（用你 PATH 里的名字）
-LA64_CXX  := loongarch64-linux-gnu-g++
-RISCV_CXX := riscv64-linux-gnu-g++
+LA64_CC  := loongarch64-linux-gnu-gcc
+RISCV_CC := riscv64-linux-gnu-gcc
 
 # 输出目录
 OUTDIR := build
@@ -18,11 +18,11 @@ all: $(LA64_OUT) $(RISCV_OUT)
 
 $(LA64_OUT): $(SRC)
 	mkdir -p $(OUTDIR)
-	$(LA64_CXX) $(CXXFLAGS) -o $@ $(SRC) $(LDLIBS)
+	$(LA64_CC) $(CFLAGS) -o $@ $(SRC) $(LDLIBS)
 
 $(RISCV_OUT): $(SRC)
 	mkdir -p $(OUTDIR)
-	$(RISCV_CXX) $(CXXFLAGS) -o $@ $(SRC) $(LDLIBS)
+	$(RISCV_CC) $(CFLAGS) -o $@ $(SRC) $(LDLIBS)
 
 clean:
 	rm -rf $(OUTDIR)
