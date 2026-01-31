@@ -4,7 +4,6 @@
 #include <fcntl.h>
 #include "game.h"
 #include <cstdlib>
-#include <sys/wait.h>
 
 static struct termios orig_termios;
 
@@ -29,23 +28,11 @@ void enableRawMode() {
 }
 
 void clear_screen() {
-    pid_t pid = fork();  // 创建子进程
-    if (pid == -1) {
-        // 处理fork失败（可选添加错误提示）
-        return;
-    }
-    
-    if (pid == 0) {
-        // 子进程：执行/musl/busybox clear
-        char *argv[] = {"/musl/busybox", "clear", NULL};  // 使用完整路径
-        execvp(argv[0], argv);  // 第一个参数是可执行文件路径
-        
-        // 如果execvp执行失败才会走到这里
-        _exit(1);  // 子进程退出
-    } else {
-        // 父进程：等待子进程完成清屏
-        waitpid(pid, NULL, 0);
-    }
+    // 使用ANSI转义序列清屏，无需依赖busybox
+    // \033[2J - 清除整个屏幕
+    // \033[H  - 将光标移动到左上角(1,1)
+    printf("\033[2J\033[H");
+    fflush(stdout);
 }
 
 int main() {

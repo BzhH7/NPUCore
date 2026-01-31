@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use user_lib::{exec, exit, fork, waitpid, shutdown, println}; 
+use user_lib::{exec, exit, fork, waitpid, shutdown, println, wait}; 
 
 #[no_mangle]
 #[link_section = ".text.entry"]
@@ -16,7 +16,8 @@ fn main() -> i32 {
     let environ = [
         "SHELL=/bash\0".as_ptr(),
         "PWD=/\0".as_ptr(),
-        "PATH=/\0".as_ptr(),
+        "PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:.\0".as_ptr(),
+        "HOME=/root\0".as_ptr(),
         "LD_LIBRARY_PATH=/\0".as_ptr(),
         core::ptr::null(),
     ];
@@ -61,20 +62,35 @@ fn main() -> i32 {
 
     println!("[initproc] Starting standalone tests directly from root...");
 
-    for argv in tests.iter() {
-        println!("[initproc] Running test command...");
+    // for argv in tests.iter() {
+    //     println!("[initproc] Running test command...");
 
-        let pid = fork();
-        if pid == 0 {
+    //     let pid = fork();
+    //     if pid == 0 {
             
-            // 执行 bash -c "./test_name"
-            exec(path, argv, &environ);
+    //         // 执行 bash -c "./test_name"
+    //         exec(path, argv, &environ);
             
-            println!("[initproc] Failed to exec bash");
-            exit(-1);
-        } else {
-            // 父进程等待
-            waitpid(pid as usize, &mut exit_code);
+    //         println!("[initproc] Failed to exec bash");
+    //         exit(-1);
+    //     } else {
+    //         // 父进程等待
+    //         waitpid(pid as usize, &mut exit_code);
+    //     }
+    // }
+
+    if fork() == 0 {
+        exec(path, &[path.as_ptr() as *const u8, "--login\0".as_ptr(), core::ptr::null()], &environ);
+    } else {
+        loop {
+            let mut exit_code: i32 = 0;
+            let pid = wait(&mut exit_code);
+            // ECHLD is -10
+            // user_lib::println!(
+            //     "[initproc] Released a zombie process, pid={}, exit_code={}",
+            //     pid,
+            //     exit_code,
+            // );
         }
     }
 

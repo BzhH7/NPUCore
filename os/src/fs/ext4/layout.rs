@@ -606,7 +606,6 @@ impl File for Ext4OSInode {
             .map_err(|_| ENOTEMPTY)?;
 
         let mut parent_inode_ref = parent.inode.lock();
-        let mut parent_inode_ref = parent.inode.lock();
 
         // 拿到要删除的 child inode 引用
         let mut child_inode_ref = self.ext4fs.get_inode_ref(ino);

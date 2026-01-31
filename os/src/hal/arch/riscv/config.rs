@@ -42,7 +42,7 @@ pub const DISK_IMAGE_BASE: usize = MEMORY_START + 0x1000_0000;
 pub const SYSTEM_TASK_LIMIT: usize = 128;
 pub const SYSTEM_FD_LIMIT: usize = 256;
 
-pub const BLOCK_SZ: usize = 512;
+pub const BLOCK_SZ: usize = 4096;
 
 pub const BUFFER_CACHE_NUM: usize = 128;
 // dummy

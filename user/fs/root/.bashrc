@@ -2,6 +2,9 @@
 # see /usr/share/doc/bash/examples/startup-files (in the package bash-doc)
 # for examples
 
+# Set PATH to include common directories
+export PATH="/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:."
+
 # If not running interactively, don't do anything
 case $- in
     *i*) ;;

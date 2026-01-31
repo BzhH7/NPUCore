@@ -1,0 +1,20 @@
+# /etc/profile: system-wide .profile file for the Bourne shell (sh(1))
+# and Bourne compatible shells (bash(1), ksh(1), ash(1), ...).
+
+# Set PATH
+export PATH="/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:."
+
+# Set HOME if not set
+if [ -z "$HOME" ]; then
+    export HOME="/root"
+fi
+
+# Set TERM if not set
+if [ -z "$TERM" ]; then
+    export TERM="xterm-256color"
+fi
+
+# Source user's .bashrc if it exists
+if [ -f "$HOME/.bashrc" ]; then
+    . "$HOME/.bashrc"
+fi
