@@ -134,12 +134,12 @@ endif
 
 env: # switch-toolchain
 	rustup override set nightly-2024-02-03
-	@sed -i 's@http://.*security.ubuntu.com@http://mirrors.tuna.tsinghua.edu.cn@g' /etc/apt/sources.list
-	@sed -i 's@http://.*archive.ubuntu.com@http://mirrors.tuna.tsinghua.edu.cn@g' /etc/apt/sources.list
-    # 3. 暴力清理 apt 缓存列表，解决 "Hash Sum mismatch" 错误
-	@rm -rf /var/lib/apt/lists/*
-	@apt-get update
-	@DEBIAN_FRONTEND=noninteractive apt-get install -y expect
+# 	@sed -i 's@http://.*security.ubuntu.com@http://mirrors.tuna.tsinghua.edu.cn@g' /etc/apt/sources.list
+# 	@sed -i 's@http://.*archive.ubuntu.com@http://mirrors.tuna.tsinghua.edu.cn@g' /etc/apt/sources.list
+#     # 3. 暴力清理 apt 缓存列表，解决 "Hash Sum mismatch" 错误
+# 	@rm -rf /var/lib/apt/lists/*
+# 	@apt-get update
+# 	@DEBIAN_FRONTEND=noninteractive apt-get install -y expect
 	(rustup target list | grep "$(TARGET) (installed)") || rustup target add $(TARGET)
 	(rustup target list | grep "loongarch64-unknown-none (installed)") || rustup target add loongarch64-unknown-none
 	rustup component add rust-src

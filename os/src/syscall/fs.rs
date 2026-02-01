@@ -751,7 +751,7 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> isize {
     
     // If first > last, it's not an error, just nothing to do
     if first > last {
-        return SUCCESS;
+        return EINVAL;
     }
     
     let task = current_task().unwrap();
