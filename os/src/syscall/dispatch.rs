@@ -559,6 +559,18 @@ fn wrap_faccessat2(a: &SyscallArgs) -> isize {
     sys_faccessat2(a.arg(0), a.arg_ptr(1), a.arg_u32(2), a.arg_u32(3))
 }
 
+fn wrap_close_range(a: &SyscallArgs) -> isize {
+    sys_close_range(a.arg_u32(0), a.arg_u32(1), a.arg_u32(2))
+}
+
+fn wrap_eventfd2(a: &SyscallArgs) -> isize {
+    sys_eventfd2(a.arg_u32(0), a.arg_i32(1))
+}
+
+fn wrap_waitid(a: &SyscallArgs) -> isize {
+    sys_waitid(a.arg_u32(0), a.arg_u32(1), a.arg_mut_ptr(2), a.arg_u32(3))
+}
+
 fn wrap_shutdown(_a: &SyscallArgs) -> isize {
     sys_shutdown()
 }
@@ -685,6 +697,9 @@ pub fn dispatch_syscall(id: usize, args: [usize; 6]) -> Option<(&'static str, is
         SYSCALL_COPY_FILE_RANGE => ("copy_file_range", Some(wrap_copy_file_range)),
         SYSCALL_STATX => ("statx", Some(wrap_statx)),
         SYSCALL_FACCESSAT2 => ("faccessat2", Some(wrap_faccessat2)),
+        SYSCALL_CLOSE_RANGE => ("close_range", Some(wrap_close_range)),
+        SYSCALL_EVENTFD2 => ("eventfd2", Some(wrap_eventfd2)),
+        SYSCALL_WAITID => ("waitid", Some(wrap_waitid)),
         // Non-standard syscalls
         SYSCALL_SHUTDOWN => ("shutdown", Some(wrap_shutdown)),
         SYSCALL_GET_TIME => ("get_time", Some(wrap_get_time)),
@@ -798,6 +813,9 @@ pub fn get_syscall_name(id: usize) -> &'static str {
         SYSCALL_COPY_FILE_RANGE => "copy_file_range",
         SYSCALL_STATX => "statx",
         SYSCALL_FACCESSAT2 => "faccessat2",
+        SYSCALL_CLOSE_RANGE => "close_range",
+        SYSCALL_EVENTFD2 => "eventfd2",
+        SYSCALL_WAITID => "waitid",
         SYSCALL_SHUTDOWN => "shutdown",
         SYSCALL_GET_TIME => "get_time",
         SYSCALL_OPEN => "open",

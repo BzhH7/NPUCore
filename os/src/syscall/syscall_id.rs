@@ -1,4 +1,5 @@
 pub const SYSCALL_GETCWD: usize = 17;
+pub const SYSCALL_EVENTFD2: usize = 19;
 pub const SYSCALL_DUP3: usize = 20;
 pub const SYSCALL_DUP: usize = 23;
 pub const SYSCALL_DUP2: usize = 24;
@@ -36,6 +37,7 @@ pub const SYSCALL_FSYNC: usize = 82;
 pub const SYSCALL_UTIMENSAT: usize = 88;
 pub const SYSCALL_EXIT: usize = 93;
 pub const SYSCALL_EXIT_GROUP: usize = 94;
+pub const SYSCALL_WAITID: usize = 95;
 pub const SYSCALL_SET_TID_ADDRESS: usize = 96;
 pub const SYSCALL_FUTEX: usize = 98;
 pub const SYSCALL_SET_ROBUST_LIST: usize = 99;
@@ -103,7 +105,20 @@ pub const SYSCALL_MEMBARRIER: usize = 283;
 pub const SYSCALL_COPY_FILE_RANGE: usize = 285;
 pub const SYSCALL_STATX: usize = 291;
 pub const SYSCALL_FACCESSAT2: usize = 439;
-// Not standard POSIX sys_call
+
+pub const SYSCALL_CLOSE_RANGE: usize = 436;
+
+// Scheduler syscalls
+pub const SYSCALL_SCHED_SETPARAM: usize = 118;
+pub const SYSCALL_SCHED_GETPARAM: usize = 119;
+pub const SYSCALL_SCHED_SETSCHEDULER: usize = 120;
+pub const SYSCALL_SCHED_GETSCHEDULER: usize = 121;
+pub const SYSCALL_SCHED_GETAFFINITY: usize = 123;
+pub const SYSCALL_SCHED_SETAFFINITY: usize = 122;
+pub const SYSCALL_SCHED_YIELD: usize = 124;
+pub const SYSCALL_SCHED_GET_PRIORITY_MAX: usize = 125;
+pub const SYSCALL_SCHED_GET_PRIORITY_MIN: usize = 126;
+
 pub const SYSCALL_LS: usize = 500;
 pub const SYSCALL_SHUTDOWN: usize = 501;
 pub const SYSCALL_CLEAR: usize = 502;

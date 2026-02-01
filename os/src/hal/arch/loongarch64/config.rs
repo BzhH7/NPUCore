@@ -78,7 +78,7 @@ pub const MEM_DISK_SIZE: usize = 0x800_0000;
 
 pub static mut CLOCK_FREQ: usize = 0;
 
-pub const MAX_CPU_NUM: usize = 4;
+pub const MAX_CPU_NUM: usize = 1;
 
 use core::arch::asm;
 
