@@ -58,41 +58,58 @@ fn main() -> i32 {
         [path.as_ptr(), "-c\0".as_ptr(), "./yield\0".as_ptr(), core::ptr::null()],
     ];
 
+    let tests_final = [
+        [path.as_ptr(), "-c\0".as_ptr(), "./cr-1\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./cr-2\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./cr-3\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./cr-4\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./cr-5\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./ef2-1\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./ef2-2\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./ef2-3\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./ef2-4\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./ef2-5\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./wi-1\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./wi-2\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./wi-3\0".as_ptr(), core::ptr::null()],
+        [path.as_ptr(), "-c\0".as_ptr(), "./wi-4\0".as_ptr(), core::ptr::null()],
+    ];
+
     let mut exit_code: i32 = 0;
 
     println!("[initproc] Starting standalone tests directly from root...");
 
-    // for argv in tests.iter() {
-    //     println!("[initproc] Running test command...");
+    for argv in tests_final.iter() {
+        println!("[initproc] Running test command...");
 
-    //     let pid = fork();
-    //     if pid == 0 {
+        let pid = fork();
+        if pid == 0 {
             
-    //         // 执行 bash -c "./test_name"
-    //         exec(path, argv, &environ);
+            // 执行 bash -c "./test_name"
+            exec(path, argv, &environ);
             
-    //         println!("[initproc] Failed to exec bash");
-    //         exit(-1);
-    //     } else {
-    //         // 父进程等待
-    //         waitpid(pid as usize, &mut exit_code);
-    //     }
-    // }
-
-    if fork() == 0 {
-        exec(path, &[path.as_ptr() as *const u8, "--login\0".as_ptr(), core::ptr::null()], &environ);
-    } else {
-        loop {
-            let mut exit_code: i32 = 0;
-            let pid = wait(&mut exit_code);
-            // ECHLD is -10
-            // user_lib::println!(
-            //     "[initproc] Released a zombie process, pid={}, exit_code={}",
-            //     pid,
-            //     exit_code,
-            // );
+            println!("[initproc] Failed to exec bash");
+            exit(-1);
+        } else {
+            // 父进程等待
+            waitpid(pid as usize, &mut exit_code);
         }
     }
+
+    // if fork() == 0 {
+    //     exec(path, &[path.as_ptr() as *const u8, "--login\0".as_ptr(), core::ptr::null()], &environ);
+    // } else {
+    //     loop {
+    //         let mut exit_code: i32 = 0;
+    //         let pid = wait(&mut exit_code);
+    //         // ECHLD is -10
+    //         // user_lib::println!(
+    //         //     "[initproc] Released a zombie process, pid={}, exit_code={}",
+    //         //     pid,
+    //         //     exit_code,
+    //         // );
+    //     }
+    // }
 
     println!("[initproc] All tests finished!");
     shutdown();
