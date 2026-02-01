@@ -1,3 +1,4 @@
+pub mod eventfd;
 pub mod hwclock;
 pub mod interrupts;
 pub mod null;

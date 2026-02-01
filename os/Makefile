@@ -1,5 +1,10 @@
+<<<<<<< HEAD
 ARCHS = la64
 CURR_ARCH ?= la64
+=======
+ARCHS = rv64 
+CURR_ARCH ?= rv64
+>>>>>>> 4581a9d (feat:添加决赛系统调用)
 FS_MODE ?= ext4
 BLK_MODE ?= virt
 MODE ?= release

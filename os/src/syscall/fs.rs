@@ -1,6 +1,7 @@
 use crate::fs::poll::{ppoll, pselect, FdSet, PollFd};
 use crate::fs::*;
 use crate::fs::dev::pipe::Pipe;
+use crate::fs::dev::eventfd::{EventFd, EFD_CLOEXEC, EFD_NONBLOCK, EFD_SEMAPHORE};
 use crate::hal::BLOCK_SZ;
 use crate::mm::{
     copy_from_user, copy_from_user_array, copy_to_user, copy_to_user_array, copy_to_user_string,
@@ -11,6 +12,7 @@ use crate::task::{current_task, current_user_token};
 use crate::timer::TimeSpec;
 use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::mem::size_of;
 use core::panic;
@@ -724,6 +726,109 @@ pub fn sys_close(fd: usize) -> isize {
         Ok(_) => SUCCESS,
         Err(errno) => errno,
     }
+}
+
+/// Close a range of file descriptors
+/// 
+/// # Arguments
+/// * `first` - First file descriptor to close
+/// * `last` - Last file descriptor to close (inclusive)
+/// * `flags` - Flags controlling behavior:
+///   - `CLOSE_RANGE_CLOEXEC` (bit 2): Set FD_CLOEXEC instead of closing
+/// 
+/// # Returns
+/// * 0 on success
+/// * Negative error code on failure
+pub fn sys_close_range(first: u32, last: u32, flags: u32) -> isize {
+    const CLOSE_RANGE_CLOEXEC: u32 = 1 << 2;
+    
+    info!("[sys_close_range] first: {}, last: {}, flags: {:b}", first, last, flags);
+    
+    // Check for invalid flags
+    if flags & !CLOSE_RANGE_CLOEXEC != 0 {
+        return EINVAL;
+    }
+    
+    // If first > last, it's not an error, just nothing to do
+    if first > last {
+        return SUCCESS;
+    }
+    
+    let task = current_task().unwrap();
+    let mut fd_table = task.files.lock();
+    
+    // Get the actual fd table length to avoid iterating over a huge range
+    let fd_table_len = fd_table.iter().count();
+    
+    // Limit the end to the actual fd table size
+    // When last == ~0U, we only iterate up to the fd table size
+    let end = if last == u32::MAX || last as usize >= fd_table_len {
+        if fd_table_len == 0 {
+            return SUCCESS;
+        }
+        (fd_table_len - 1) as u32
+    } else {
+        last
+    };
+    
+    // Start from first, but skip if first is beyond the table
+    if first as usize >= fd_table_len {
+        return SUCCESS;
+    }
+    
+    for fd in first..=end {
+        let fd_usize = fd as usize;
+        if flags & CLOSE_RANGE_CLOEXEC != 0 {
+            // Set FD_CLOEXEC flag instead of closing
+            if let Ok(file_desc) = fd_table.get_refmut(fd_usize) {
+                file_desc.set_cloexec(true);
+            }
+            // If fd is invalid, silently skip (not an error)
+        } else {
+            // Close the fd, ignoring errors for invalid fds
+            let _ = fd_table.remove(fd_usize);
+        }
+    }
+    
+    SUCCESS
+}
+
+/// Create an eventfd file descriptor
+/// 
+/// # Arguments
+/// * `initval` - Initial value of the counter
+/// * `flags` - Flags controlling behavior:
+///   - `EFD_CLOEXEC`: Set close-on-exec flag
+///   - `EFD_NONBLOCK`: Set non-blocking mode
+///   - `EFD_SEMAPHORE`: Provide semaphore-like semantics for reads
+/// 
+/// # Returns
+/// * File descriptor on success
+/// * Negative error code on failure
+pub fn sys_eventfd2(initval: u32, flags: i32) -> isize {
+    let flags = flags as u32;
+    info!("[sys_eventfd2] initval: {}, flags: {:b}", initval, flags);
+    
+    // Check for invalid flags
+    const VALID_FLAGS: u32 = EFD_CLOEXEC | EFD_NONBLOCK | EFD_SEMAPHORE;
+    if flags & !VALID_FLAGS != 0 {
+        return EINVAL;
+    }
+    
+    let eventfd = EventFd::new(initval, flags);
+    let cloexec = (flags & EFD_CLOEXEC) != 0;
+    let nonblock = (flags & EFD_NONBLOCK) != 0;
+    
+    let task = current_task().unwrap();
+    let mut fd_table = task.files.lock();
+    
+    let fd = match fd_table.insert(FileDescriptor::new(cloexec, nonblock, Arc::new(eventfd))) {
+        Ok(fd) => fd,
+        Err(errno) => return errno,
+    };
+    
+    info!("[sys_eventfd2] created eventfd with fd: {}", fd);
+    fd as isize
 }
 
 /// # Warning
