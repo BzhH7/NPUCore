@@ -379,25 +379,38 @@ pub fn sys_getegid() -> isize {
     0 // root group
 }
 
-// Warning, we don't support this syscall in fact, task.setpgid() won't take effect for some reason
-// So it just pretend to do this work.
-// Fortunately, that won't make difference when we just try to run busybox sh so far.
+// setpgid implementation - sets process group ID
+// When pid is 0, operate on current process
+// When pgid is 0, use the pid of the target process as pgid
 pub fn sys_setpgid(pid: usize, pgid: usize) -> isize {
-    /* An attempt.*/
-    let task = crate::task::find_task_by_tgid(pid);
-    match task {
-        Some(task) => task.setpgid(pgid),
-        None => ESRCH,
-    }
+    let target = if pid == 0 {
+        current_task().unwrap()
+    } else {
+        match crate::task::find_task_by_tgid(pid) {
+            Some(task) => task,
+            None => return ESRCH,
+        }
+    };
+    
+    let actual_pgid = if pgid == 0 {
+        target.getpid()
+    } else {
+        pgid
+    };
+    
+    target.setpgid(actual_pgid)
 }
 
 pub fn sys_getpgid(pid: usize) -> isize {
-    /* An attempt.*/
-    let task = crate::task::find_task_by_tgid(pid);
-    match task {
-        Some(task) => task.getpgid() as isize,
-        None => ESRCH,
-    }
+    let target = if pid == 0 {
+        current_task().unwrap()
+    } else {
+        match crate::task::find_task_by_tgid(pid) {
+            Some(task) => task,
+            None => return ESRCH,
+        }
+    };
+    target.getpgid() as isize
 }
 /// creates a new session if the calling process is not a process group leader.
 /// The calling process is the leader of the new session
@@ -793,6 +806,230 @@ pub fn sys_wait4(pid: isize, status: *mut u32, option: u32, _ru: *mut Rusage) ->
                 debug!("[sys_wait4] --resumed--");
             }
         }
+    }
+}
+
+/// idtype for waitid
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum IdType {
+    P_ALL = 0,   // Wait for any child
+    P_PID = 1,   // Wait for the child whose process ID matches id
+    P_PGID = 2,  // Wait for any child whose process group ID matches id
+}
+
+/// SigInfo structure for waitid - matches Linux siginfo_t layout for SIGCHLD
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WaitIdInfo {
+    pub si_signo: i32,    // Signal number (SIGCHLD = 17)
+    pub si_errno: i32,    // Error code
+    pub si_code: i32,     // Signal code (CLD_EXITED, CLD_KILLED, etc.)
+    __pad0: i32,          // Padding for alignment
+    pub si_pid: i32,      // Sending process ID
+    pub si_uid: i32,      // Real user ID of sending process
+    pub si_status: i32,   // Exit value or signal
+    __pad: [u8; 128 - 7 * 4], // Padding to make total size 128 bytes
+}
+
+impl WaitIdInfo {
+    pub const CLD_EXITED: i32 = 1;    // Child has exited
+    pub const CLD_KILLED: i32 = 2;    // Child was killed
+    pub const CLD_DUMPED: i32 = 3;    // Child terminated abnormally (core dumped)
+    pub const CLD_TRAPPED: i32 = 4;   // Traced child has trapped
+    pub const CLD_STOPPED: i32 = 5;   // Child has stopped
+    pub const CLD_CONTINUED: i32 = 6; // Stopped child has continued
+    pub const SIGCHLD: i32 = 17;
+    
+    pub fn new_exited(pid: usize, uid: u32, exit_status: u32) -> Self {
+        // exit_status is in the format (exit_code << 8)
+        // Extract the actual exit code
+        let exit_code = (exit_status >> 8) as i32;
+        Self {
+            si_signo: Self::SIGCHLD,
+            si_errno: 0,
+            si_code: Self::CLD_EXITED,
+            __pad0: 0,
+            si_pid: pid as i32,
+            si_uid: uid as i32,
+            si_status: exit_code,
+            __pad: [0; 128 - 7 * 4],
+        }
+    }
+    
+    pub fn new_killed(pid: usize, uid: u32, signal: i32) -> Self {
+        Self {
+            si_signo: Self::SIGCHLD,
+            si_errno: 0,
+            si_code: Self::CLD_KILLED,
+            __pad0: 0,
+            si_pid: pid as i32,
+            si_uid: uid as i32,
+            si_status: signal,
+            __pad: [0; 128 - 7 * 4],
+        }
+    }
+    
+    pub fn empty() -> Self {
+        Self {
+            si_signo: 0,
+            si_errno: 0,
+            si_code: 0,
+            __pad0: 0,
+            si_pid: 0,
+            si_uid: 0,
+            si_status: 0,
+            __pad: [0; 128 - 7 * 4],
+        }
+    }
+}
+
+/// Wait for state changes in a child process
+/// 
+/// # Arguments
+/// * `idtype` - Type of identifier (P_PID, P_PGID, P_ALL)
+/// * `id` - Identifier value (pid or pgid depending on idtype)
+/// * `infop` - Pointer to siginfo_t structure to fill
+/// * `options` - Wait options (WEXITED, WSTOPPED, WCONTINUED, WNOHANG, WNOWAIT)
+/// 
+/// # Returns
+/// * 0 on success (info filled)
+/// * Negative error code on failure
+pub fn sys_waitid(idtype: u32, id: u32, infop: *mut WaitIdInfo, options: u32) -> isize {
+    let options = match WaitOption::from_bits(options) {
+        Some(opt) => opt,
+        None => {
+            warn!("[sys_waitid] invalid options: {:b}", options);
+            return EINVAL;
+        }
+    };
+    
+    info!("[sys_waitid] idtype: {}, id: {}, options: {:?}", idtype, id, options);
+    
+    // Must specify at least one of WEXITED, WSTOPPED, or WCONTINUED
+    if !options.intersects(WaitOption::WEXITED | WaitOption::WSTOPPED | WaitOption::WCONTINUED) {
+        return EINVAL;
+    }
+    
+    let idtype = match idtype {
+        0 => IdType::P_ALL,
+        1 => IdType::P_PID,
+        2 => IdType::P_PGID,
+        _ => return EINVAL,
+    };
+    
+    let task = current_task().unwrap();
+    let token = task.get_user_token();
+    
+    loop {
+        // First, collect child info without holding parent lock for too long
+        // to avoid deadlock with P_PGID
+        let inner = task.acquire_inner_lock();
+        
+        // Collect (index, pid, pgid, is_zombie, exit_code) for each child
+        let children_info: Vec<(usize, usize, usize, bool, u32)> = inner
+            .children
+            .iter()
+            .enumerate()
+            .map(|(idx, child)| {
+                let pid = child.getpid();
+                let child_inner = child.acquire_inner_lock();
+                let pgid = child_inner.pgid;
+                let is_zombie = child_inner.is_zombie();
+                let exit_code = child_inner.exit_code;
+                drop(child_inner);
+                (idx, pid, pgid, is_zombie, exit_code)
+            })
+            .collect();
+        
+        // Check if there's a matching child
+        let has_matching_child = children_info.iter().any(|(_, pid, pgid, _, _)| {
+            match idtype {
+                IdType::P_ALL => true,
+                IdType::P_PID => *pid == id as usize,
+                IdType::P_PGID => *pgid == id as usize,
+            }
+        });
+        
+        if !has_matching_child {
+            return ECHILD;
+        }
+        
+        // Look for a zombie child if WEXITED is set
+        if options.contains(WaitOption::WEXITED) {
+            let found = children_info.iter().find(|(_, pid, pgid, is_zombie, _)| {
+                if !*is_zombie {
+                    return false;
+                }
+                match idtype {
+                    IdType::P_ALL => true,
+                    IdType::P_PID => *pid == id as usize,
+                    IdType::P_PGID => *pgid == id as usize,
+                }
+            });
+            
+            if let Some(&(idx, child_pid, _, _, exit_code)) = found {
+                // Need to get mutable access to remove the child
+                drop(inner);
+                let mut inner = task.acquire_inner_lock();
+                
+                // Verify the child is still there and still zombie (might have changed)
+                if idx < inner.children.len() {
+                    let child = &inner.children[idx];
+                    if child.getpid() == child_pid {
+                        let child_inner = child.acquire_inner_lock();
+                        if child_inner.is_zombie() {
+                            let actual_exit_code = child_inner.exit_code;
+                            drop(child_inner);
+                            
+                            // Remove child unless WNOWAIT
+                            if !options.contains(WaitOption::WNOWAIT) {
+                                inner.children.remove(idx);
+                            }
+                            drop(inner);
+                            
+                            // Fill in the siginfo structure
+                            if !infop.is_null() {
+                                let sig_num = actual_exit_code & 0x7f;
+                                let info = if sig_num == 0 {
+                                    WaitIdInfo::new_exited(child_pid, 0, actual_exit_code)
+                                } else {
+                                    WaitIdInfo::new_killed(child_pid, 0, sig_num as i32)
+                                };
+                                
+                                if copy_to_user(token, &info, infop).is_err() {
+                                    return EFAULT;
+                                }
+                            }
+                            
+                            info!("[sys_waitid] found zombie child pid: {}, exit_code: {:x}", child_pid, actual_exit_code);
+                            return SUCCESS;
+                        }
+                        drop(child_inner);
+                    }
+                }
+                // Child state changed, retry the loop
+                drop(inner);
+                continue;
+            }
+        }
+        
+        // No matching zombie found
+        drop(inner);
+        
+        if options.contains(WaitOption::WNOHANG) {
+            // Non-blocking: return success with zeroed siginfo
+            if !infop.is_null() {
+                if copy_to_user(token, &WaitIdInfo::empty(), infop).is_err() {
+                    return EFAULT;
+                }
+            }
+            return SUCCESS;
+        }
+        
+        // Block and wait for a child to change state
+        block_current_and_run_next();
+        debug!("[sys_waitid] --resumed--");
     }
 }
 
