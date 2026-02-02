@@ -2,6 +2,7 @@ pub mod hwclock;
 pub mod interrupts;
 pub mod null;
 pub mod pipe;
+pub mod procfs;
 pub mod socket;
 pub mod tty;
 pub mod zero;

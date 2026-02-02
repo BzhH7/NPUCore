@@ -27,7 +27,7 @@ use crate::net::SocketTable;
 use crate::syscall::CloneFlags;
 use crate::timer::{ITimerVal, TimeVal};
 use alloc::boxed::Box;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::fmt::{self, Debug, Formatter};
@@ -69,6 +69,8 @@ pub struct TaskControlBlock {
     pub ustack_base: usize,
     /// Exit signal
     pub exit_signal: Signals,
+    /// Command name (basename of executable)
+    pub comm: Mutex<[u8; 16]>,
     
     /// 【调试】记录当前任务正在哪个 CPU 上运行，用于检测双重运行
     /// TASK_NOT_RUNNING 表示不在任何 CPU 上运行
@@ -397,6 +399,19 @@ impl TaskControlBlock {
     pub fn acquire_inner_lock(&self) -> MutexGuard<TaskControlBlockInner> {
         self.inner.lock()
     }
+    /// 获取命令名
+    pub fn get_comm(&self) -> String {
+        let comm = self.comm.lock();
+        let len = comm.iter().position(|&c| c == 0).unwrap_or(16);
+        String::from_utf8_lossy(&comm[..len]).to_string()
+    }
+    /// 设置命令名
+    pub fn set_comm(&self, name: &str) {
+        let mut comm = self.comm.lock();
+        comm.fill(0);
+        let len = name.len().min(15);
+        comm[..len].copy_from_slice(&name.as_bytes()[..len]);
+    }
     /// 获取陷阱上下文的用户虚拟地址
     pub fn trap_cx_user_va(&self) -> usize {
         // 从线程ID计算陷阱上下文的用户虚拟地址
@@ -451,6 +466,7 @@ impl TaskControlBlock {
             kstack,
             ustack_base: ustack_bottom_from_tid(tid),
             exit_signal: Signals::empty(),
+            comm: Mutex::new(*b"initproc\0\0\0\0\0\0\0\0"),
             running_on_cpu: AtomicUsize::new(TASK_NOT_RUNNING),
             on_cpu: AtomicBool::new(false),
             exe: Arc::new(Mutex::new(elf)),
@@ -591,6 +607,15 @@ impl TaskControlBlock {
         inner.heap_pt = program_break;
         // 更新可执行文件描述符
         *self.exe.lock() = elf;
+        // 更新命令名 (从 argv[0] 提取 basename)
+        if !argv_vec.is_empty() {
+            let path = &argv_vec[0];
+            let basename = path.rsplit('/').next().unwrap_or(path);
+            let mut comm = self.comm.lock();
+            comm.fill(0);
+            let len = basename.len().min(15);
+            comm[..len].copy_from_slice(&basename.as_bytes()[..len]);
+        }
         // 清理资源
         // 关闭原文件描述符
         self.files.lock().iter_mut().for_each(|fd| match fd {
@@ -690,6 +715,7 @@ impl TaskControlBlock {
                 ustack_bottom_from_tid(tid)
             },
             exit_signal,
+            comm: Mutex::new(*self.comm.lock()),
             running_on_cpu: AtomicUsize::new(TASK_NOT_RUNNING),
             on_cpu: AtomicBool::new(false),
 

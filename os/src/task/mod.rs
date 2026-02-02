@@ -24,7 +24,7 @@ use lazy_static::*;
 use log::warn;
 use manager::fetch_task;
 pub use manager::{
-    add_task, do_oom, do_wake_expired, find_task_by_pid, find_task_by_tgid, procs_count,
+    add_task, do_oom, do_wake_expired, find_task_by_pid, find_task_by_tgid, list_all_tasks, procs_count,
     sleep_interruptible, wait_with_timeout, wake_interruptible,
 };
 // pub use pid::RecycleAllocator;

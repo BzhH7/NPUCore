@@ -306,6 +306,17 @@ impl TaskManager {
             log::error!("[show_interruptible] pid: {}", task.pid.0);
         })
     }
+    
+    /// 收集此管理器中的所有任务
+    /// 返回 (就绪队列任务, 可中断队列任务)
+    pub fn collect_all_tasks(&self) -> (Vec<Arc<TaskControlBlock>>, Vec<Arc<TaskControlBlock>>) {
+        let ready: Vec<_> = self.cfs_rq.iter().cloned()
+            .chain(self.rt_rq.iter().cloned())
+            .chain(self.idle_rq.iter().cloned())
+            .collect();
+        let interruptible: Vec<_> = self.interruptible_queue.iter().cloned().collect();
+        (ready, interruptible)
+    }
 
     #[cfg(feature = "oom_handler")]
     /// 尝试从当前管理器的队列中释放内存
@@ -444,6 +455,33 @@ pub fn fetch_task() -> Option<Arc<TaskControlBlock>> {
     // - 如果 last_cpu 忙，回退到当前 CPU
     // - 新任务通过 clone/fork 自然分布到不同 CPU
     task
+}
+
+/// 列出系统中所有任务
+/// 返回所有任务的列表（包括就绪、运行中、可中断状态的任务）
+pub fn list_all_tasks() -> Vec<Arc<TaskControlBlock>> {
+    let _guard = InterruptGuard::new();
+    let mut all_tasks = Vec::new();
+    
+    // 收集当前正在运行的任务
+    if let Some(current) = super::processor::current_task() {
+        all_tasks.push(current);
+    }
+    
+    // 从所有 CPU 的管理器收集任务
+    for manager_lock in TASK_MANAGERS.iter() {
+        if let Some(manager) = manager_lock.try_lock() {
+            let (ready, interruptible) = manager.collect_all_tasks();
+            all_tasks.extend(ready);
+            all_tasks.extend(interruptible);
+        }
+    }
+    
+    // 去重（按 pid）
+    all_tasks.sort_by_key(|t| t.pid.0);
+    all_tasks.dedup_by_key(|t| t.pid.0);
+    
+    all_tasks
 }
 
 #[cfg(feature = "oom_handler")]

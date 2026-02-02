@@ -215,12 +215,38 @@ if [ "$2" = "laqemu" ]; then
             $SUDO cp -v ../apps/utils/build/${util}-la64 ${U_FS_DIR}/fs/bin/$util
         fi
     done
+    # 复制演示脚本
+    if [ -f ../apps/utils/demo.sh ]; then
+        echo "Copying demo.sh to /bin..."
+        $SUDO cp -v ../apps/utils/demo.sh ${U_FS_DIR}/fs/bin/demo.sh
+        $SUDO chmod +x ${U_FS_DIR}/fs/bin/demo.sh
+    fi
 fi
 
 if [ "$2" = "2k1000" ]; then
     $SUDO cp -r ../user/fs/* ${U_FS_DIR}/fs/
     $SUDO cp ./bash-la ${U_FS_DIR}/fs/bash
     #$SUDO cp -r ../user/LaTest/* ${U_FS_DIR}/fs/
+    # 复制演示应用程序到根目录
+    echo "Copying demo applications..."
+    for app in kilo tetris snake 2048 bench demo; do
+        if [ -f ../apps/$app/build/*-la64 ]; then
+            $SUDO cp -v ../apps/$app/build/*-la64 ${U_FS_DIR}/fs/$app
+        fi
+    done
+    # 复制工具集到 /bin 目录
+    echo "Copying utilities to /bin..."
+    for util in cat echo wc tree cal hexdump uptime ls pwd mkdir rm cp mv touch top; do
+        if [ -f ../apps/utils/build/${util}-la64 ]; then
+            $SUDO cp -v ../apps/utils/build/${util}-la64 ${U_FS_DIR}/fs/bin/$util
+        fi
+    done
+    # 复制演示脚本
+    if [ -f ../apps/utils/demo.sh ]; then
+        echo "Copying demo.sh to /bin..."
+        $SUDO cp -v ../apps/utils/demo.sh ${U_FS_DIR}/fs/bin/demo.sh
+        $SUDO chmod +x ${U_FS_DIR}/fs/bin/demo.sh
+    fi
 fi
 
 if [ "$2" = "rvqemu" ]; then
@@ -241,6 +267,12 @@ if [ "$2" = "rvqemu" ]; then
             $SUDO cp -v ../apps/utils/build/${util}-riscv64 ${U_FS_DIR}/fs/bin/$util
         fi
     done
+    # 复制演示脚本
+    if [ -f ../apps/utils/demo.sh ]; then
+        echo "Copying demo.sh to /bin..."
+        $SUDO cp -v ../apps/utils/demo.sh ${U_FS_DIR}/fs/bin/demo.sh
+        $SUDO chmod +x ${U_FS_DIR}/fs/bin/demo.sh
+    fi
 fi
 
 if [ "$2" = "visionfive2" ]; then

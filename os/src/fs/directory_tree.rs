@@ -2,7 +2,7 @@ use super::inode::DiskInodeType;
 use super::vfs::VFS;
 use super::{
     cache::BlockCacheManager,
-    dev::{interrupts::Interrupts, null::Null, tty::Teletype, zero::Zero},
+    dev::{interrupts::Interrupts, null::Null, tty::Teletype, zero::Zero, procfs::ProcDir},
     file_trait::File,
     filesystem::FileSystem,
     layout::OpenFlags,
@@ -340,6 +340,22 @@ impl DirectoryTreeNode {
     ) -> Result<Arc<dyn File>, isize> {
         log::debug!("[open]: cwd: {}, path: {}", self.get_cwd(), path);
         // println!("open file in dtn: cwd: {} name: {}",self.get_cwd(), path );
+
+        // 处理 /proc/<pid>/... 动态路径
+        if path.starts_with("/proc/") {
+            // 检查是否是动态进程路径（数字开头的子目录）
+            let rest = &path[6..]; // 跳过 "/proc/"
+            if let Some(first_char) = rest.chars().next() {
+                if first_char.is_ascii_digit() {
+                    // 这是一个 /proc/<pid>/... 路径
+                    if let Some(file) = crate::fs::dev::procfs::open_proc_file(path) {
+                        return Ok(file);
+                    } else {
+                        return Err(ENOENT);
+                    }
+                }
+            }
+        }
 
         // for comp
         const BUSYBOX_PATH: &str = "/musl/busybox";
@@ -800,10 +816,29 @@ fn init_tmp_directory() {
 }
 // 初始化进程目录
 fn init_proc_directory() {
-    match ROOT.mkdir("/proc") {
-        _ => {}
-    }
+    // 使用 ProcDir 作为 /proc 目录的底层实现，让 opendir 可以列出进程
+    let proc_dev = DirectoryTreeNode::new(
+        "proc".to_string(),
+        Arc::new(FileSystem::new(FS_Type::Null)),
+        Arc::new(crate::fs::dev::procfs::ProcDir::new()),
+        Arc::downgrade(&ROOT.get_arc()),
+    );
+    
+    // 将 /proc 添加到根目录
+    let mut lock = ROOT.children.write();
+    ROOT.cache_all_subfile(&mut lock);
+    lock.as_mut().unwrap().insert("proc".to_string(), proc_dev);
+    drop(lock);
+    
     println!("[kernel] init_proc_directory successfully!");
+    
+    // 获取 /proc 目录节点
+    let proc_inode = match ROOT.cd_path("/proc") {
+        Ok(inode) => inode,
+        Err(_) => panic!("proc directory doesn't exist"),
+    };
+    
+    // 创建静态的 /proc/meminfo 虚拟文件
     match ROOT.open("/proc/meminfo", OpenFlags::O_CREAT, false) {
         _ => {}
     }
@@ -814,11 +849,6 @@ fn init_proc_directory() {
     println!("[kernel] init_proc_mounts_directory successfully!");
     
     // 创建 /proc/interrupts 虚拟文件
-    let proc_inode = match ROOT.cd_path("/proc") {
-        Ok(inode) => inode,
-        Err(_) => panic!("proc directory doesn't exist"),
-    };
-    
     let interrupts_dev = DirectoryTreeNode::new(
         "interrupts".to_string(),
         Arc::new(FileSystem::new(FS_Type::Null)),
@@ -837,4 +867,7 @@ fn init_proc_directory() {
     crate::fs::dev::interrupts::Interrupts::debug_add_test_data();
     
     println!("[kernel] init_proc_interrupts_directory successfully!");
+    
+    // 注册动态 procfs（用于进程信息访问）
+    println!("[kernel] procfs dynamic support enabled!");
 }

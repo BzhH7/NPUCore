@@ -14,12 +14,22 @@ fn main() -> i32 {
     // 1. 设置 Shell 路径和环境变量
     let path = "/bash\0";
     let environ = [
+        "PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:.\0".as_ptr(),
         "SHELL=/bash\0".as_ptr(),
         "PWD=/\0".as_ptr(),
-        "PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:.\0".as_ptr(),
+        "LOGNAME=root\0".as_ptr(),
+        "MOTD_SHOWN=pam\0".as_ptr(),
         "HOME=/root\0".as_ptr(),
+        "LANG=C.UTF-8\0".as_ptr(),
+        "TERM=vt220\0".as_ptr(),
+        "USER=root\0".as_ptr(),
+        "SHLVL=0\0".as_ptr(),
+        "OLDPWD=/root\0".as_ptr(),
+        "PS1=\x1b[1m\x1b[32mNPUCore\x1b[0m:\x1b[1m\x1b[34m\\w\x1b[0m\\$ \0".as_ptr(),
+        "_=/bin/bash\0".as_ptr(),
         "LD_LIBRARY_PATH=/\0".as_ptr(),
         core::ptr::null(),
+
     ];
 
     let tests = [
